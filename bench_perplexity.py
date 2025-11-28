@@ -89,6 +89,11 @@ def main():
         trust_remote_code=True
     )
 
+    # Set pad token if not already set (required for models like Qwen)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+
     # Set dtype
     torch_dtype_map = {
         'float32': torch.float32,
