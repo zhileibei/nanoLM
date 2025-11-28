@@ -1,6 +1,24 @@
 #!/bin/bash
+#SBATCH --job-name=myjob_array
+#SBATCH --output=results/output_%A_%a.txt
+#SBATCH --error=results/error_%A_%a.txt
+#SBATCH -c 10
+#SBATCH -t 6:00:00
+#SBATCH -p mit_normal_gpu
+#SBATCH --gres=gpu:h100:1
+#SBATCH --mem=32G
+
 # Example workflow: Generate samples and evaluate perplexity
 set -e
+
+# Check if venv exists
+if [ ! -d "venv" ]; then
+    echo "Virtual environment not found. Please run ./setup_env.sh first."
+    exit 1
+fi
+
+# Activate virtual environment
+source venv/bin/activate
 
 # Default values
 OUT_DIR="out-shakespeare-char"
