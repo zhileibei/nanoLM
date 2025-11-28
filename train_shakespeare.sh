@@ -1,5 +1,4 @@
 #!/bin/bash
-#!/bin/bash
 #SBATCH --job-name=myjob_array
 #SBATCH --output=results/output_%A_%a.txt
 #SBATCH --error=results/error_%A_%a.txt
