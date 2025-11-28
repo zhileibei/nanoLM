@@ -21,6 +21,7 @@ seed = 1337
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32' or 'bfloat16' or 'float16'
 compile = False # use PyTorch 2.0 to compile the model to be faster
+output_file = None # output file path for samples (if None, prints to stdout)
 exec(open('configurator.py').read()) # overrides from command line or config file
 # -----------------------------------------------------------------------------
 
@@ -88,5 +89,12 @@ with torch.no_grad():
         for k in range(num_samples):
             y = model.generate(x, max_new_tokens, temperature=temperature, top_k=top_k)
             samples.append(decode(y[0].tolist()))
-            
-print(json.dumps(samples))
+
+# output samples
+samples_json = json.dumps(samples)
+if output_file is not None:
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(samples_json)
+    print(f"Samples written to {output_file}")
+else:
+    print(samples_json)

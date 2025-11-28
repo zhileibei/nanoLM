@@ -78,7 +78,7 @@ python sample.py \
     --out_dir="$OUT_DIR" \
     --num_samples="$NUM_SAMPLES" \
     --max_new_tokens="$MAX_TOKENS" \
-    > "$SAMPLES_FILE"
+    --output_file="$SAMPLES_FILE"
 
 if [ $? -eq 0 ]; then
     echo "✓ Samples generated and saved to $SAMPLES_FILE"
