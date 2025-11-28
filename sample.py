@@ -92,7 +92,7 @@ with torch.no_grad():
 
 # output samples
 samples_json = json.dumps(samples)
-if output_file is not '':
+if output_file != '':
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(samples_json)
     print(f"Samples written to {output_file}")
