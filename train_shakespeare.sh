@@ -42,7 +42,7 @@ echo "Starting training..."
 
 # Training command with explicit hyperparameters
 # You can modify these values directly here or pass them as arguments to this script if you modify it further.
-python train.py config/train_shakespeare_char.py \
+python train.py config/train_shakespeare.py \
     --n_layer=6 \
     --n_head=6 \
     --n_embd=384 \
@@ -51,5 +51,5 @@ python train.py config/train_shakespeare_char.py \
     --dropout=0.2 \
     --learning_rate=1e-3 \
     --max_iters=5000 \
-    --out_dir=out-shakespeare-char \
+    --out_dir=out-shakespeare \
     --compile=False

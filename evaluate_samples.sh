@@ -21,7 +21,7 @@ fi
 source venv/bin/activate
 
 # Default values
-OUT_DIR="out-shakespeare-char"
+OUT_DIR="out-shakespeare"
 NUM_SAMPLES=10
 MAX_TOKENS=500
 SAMPLES_FILE="samples.json"
