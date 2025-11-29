@@ -19,9 +19,9 @@ fi
 source venv/bin/activate
 
 # Prepare the Shakespeare dataset if needed
-if [ ! -f "data/shakespeare_char/train.bin" ]; then
+if [ ! -f "data/shakespeare/train.bin" ]; then
     echo "Preparing Shakespeare dataset..."
-    python data/shakespeare_char/prepare.py
+    python data/shakespeare/prepare.py
 else
     echo "Shakespeare dataset already prepared."
 fi
