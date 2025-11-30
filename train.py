@@ -436,11 +436,27 @@ if model_type == 'diffusion':
         context_len=model.config.context_len
     )
     # Create data loader for text files
-    data_path = os.path.join(data_dir, f'{dataset}.txt')
-    if not os.path.exists(data_path):
-        # Fallback to some default text file
-        print(f"Warning: {data_path} not found, looking for alternative text files...")
-        data_path = 'data/tiny_shakespeare.txt'
+    # Try multiple possible locations for the text file
+    possible_paths = [
+        os.path.join(data_dir, f'{dataset}.txt'),          # data/shakespeare/shakespeare.txt
+        os.path.join(data_dir, 'input.txt'),               # data/shakespeare/input.txt
+        os.path.join('data', f'{dataset}_char', 'input.txt'), # data/shakespeare_char/input.txt
+        'data/tiny_shakespeare.txt',                       # fallback
+    ]
+    
+    data_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            data_path = path
+            print(f"Found text file: {data_path}")
+            break
+    
+    if data_path is None:
+        raise FileNotFoundError(
+            f"Could not find text file for dataset '{dataset}'. Tried:\n" + 
+            "\n".join(f"  - {p}" for p in possible_paths) +
+            "\n\nPlease run the prepare script or place a text file in one of these locations."
+        )
     diffusion_data_loader = get_diffusion_data_loader(data_path, batch_size, block_size, device)
     # Load dataset tokens for context sampling
     dataset_tokens = None
@@ -550,7 +566,7 @@ else:
     t0 = time.time()
     local_iter_num = 0 # number of iterations in the lifetime of this process
     raw_model = model.module if ddp else model # unwrap DDP container if needed
-    running_mfu = -1.0
+    # running_mfu = -1.0  # commented out MFU tracking
     while True:
 
         # determine and set the learning rate for this iteration
@@ -568,7 +584,7 @@ else:
                     "train/loss": losses['train'],
                     "val/loss": losses['val'],
                     "lr": lr,
-                    "mfu": running_mfu*100, # convert to percentage
+                    # "mfu": running_mfu*100, # convert to percentage
                 })
             if losses['val'] < best_val_loss or always_save_checkpoint:
                 best_val_loss = losses['val']
@@ -621,10 +637,11 @@ else:
             # get loss as float. note: this is a CPU-GPU sync point
             # scale up to undo the division above, approximating the true total loss (exact would have been a sum)
             lossf = loss.item() * gradient_accumulation_steps
-            if local_iter_num >= 5: # let the training loop settle a bit
-                mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
-                running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
-            print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+            # if local_iter_num >= 5: # let the training loop settle a bit
+            #     mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
+            #     running_mfu = mfu if running_mfu == -1.0 else 0.9*running_mfu + 0.1*mfu
+            # print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, mfu {running_mfu*100:.2f}%")
+            print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms")
         iter_num += 1
         local_iter_num += 1
 
