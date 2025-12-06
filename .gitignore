@@ -13,3 +13,4 @@ venv/
 *.pt
 results/
 CLAUDE.md
+wandb/*

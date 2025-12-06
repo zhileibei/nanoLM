@@ -27,6 +27,7 @@ class GPTConfig:
     n_embd: int = 384 
     dropout: float = 0.0
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    context_len: int = 16  # Number of prefix tokens that are never masked
 
 @dataclass
 class DiffusionConfig(GPTConfig):
@@ -448,20 +449,19 @@ class Transformer(nn.Module):
 
     @torch.no_grad()
     @torch.inference_mode()
-    def generate(self, tokens, max_tokens, temperature=1.0, top_k=None, seed=42):
+    def generate(self, ids, max_tokens, temperature=1.0, device=None, top_k=None, seed=42):
         """
         Naive autoregressive streaming inference.
         To make it super simple, let's assume:
         - batch size is 1
         - ids and the yielded tokens are simple Python lists and ints
         """
-        assert isinstance(tokens, list)
-        device = self.get_device()
+        # assert isinstance(tokens, list)
+        device = self.get_device() if device is None else device
         rng = None
         if temperature > 0:
             rng = torch.Generator(device=device)
             rng.manual_seed(seed)
-        ids = torch.tensor([tokens], dtype=torch.long, device=device) # add batch dim
         for _ in range(max_tokens):
             logits = self.forward(ids) # (B, T, vocab_size)
             logits = logits[:, -1, :] # (B, vocab_size)
@@ -476,11 +476,11 @@ class Transformer(nn.Module):
             else:
                 next_ids = torch.argmax(logits, dim=-1, keepdim=True)
             # append sampled index to the running sequence and continue
-            idx = torch.cat((ids, next_ids), dim=1)
-            token = next_ids.item()
-            yield token
+            ids = torch.cat((ids, next_ids), dim=1)
+            # token = next_ids.item()
+            # yield token
 
-        # return idx
+        return ids
 
     @torch.inference_mode()
     def sample_topk(
@@ -635,7 +635,10 @@ class Transformer(nn.Module):
             confidences, predicted_tokens = torch.max(probs, dim=-1)  # (B, T)
 
             # Select positions above threshold (only among masked positions)
-            above_threshold = (confidences >= confidence_threshold) & masked_positions
+            if step < num_steps - 1:
+                above_threshold = (confidences >= confidence_threshold) & masked_positions
+            else:
+                above_threshold = masked_positions
 
             # Ensure at least one token is decoded per batch if any remain masked
             for b in range(batch_size):
