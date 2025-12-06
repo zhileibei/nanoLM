@@ -4,6 +4,7 @@
 out_dir = 'out-shakespeare'
 eval_interval = 1 # keep frequent because we'll overfit
 eval_iters = 1
+sample_interval = 250
 log_interval = 1 # don't print too too often
 
 # we expect to overfit on this small dataset, so only save when val improves

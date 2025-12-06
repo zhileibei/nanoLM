@@ -14,3 +14,4 @@ venv/
 results/
 CLAUDE.md
 wandb/*
+out-*/*

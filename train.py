@@ -19,6 +19,7 @@ $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123
 import os
 import time
 import math
+import json
 import pickle
 import tiktoken
 from contextlib import nullcontext
@@ -53,6 +54,7 @@ wandb_run_name = 'gpt2' # 'run' + str(time.time())
 dataset = 'openwebtext'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
+sample_batch_size = 1
 block_size = 1024
 # model type
 model_type = 'gpt2' # 'gpt2' or 'diffusion'
@@ -82,8 +84,8 @@ min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchi
 # DDP settings
 backend = 'nccl' # 'nccl', 'gloo', etc.
 # system
-# device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
-device = 'mps'
+device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
+# device = 'mps'
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 compile = True # use PyTorch 2.0 to compile the model to be faster
 # -----------------------------------------------------------------------------
@@ -601,7 +603,7 @@ while True:
             context_tokens = None
             if raw_model.config.context_len > 0:
                 context_tokens = get_random_context(
-                    raw_model.config.context_len, batch_size=1
+                    raw_model.config.context_len, batch_size=sample_batch_size
                 )
             context = decode(context_tokens[0].tolist())
             print(f"\n--- Context ---")
@@ -626,11 +628,16 @@ while True:
                 )
             # Decode samples to text
             # text = decode_tokens(samples[0]) # ASCII
-            text = decode(samples[0].tolist())
-            print(f"\n--- Generated ---")
-            print(text)
-            print("--- End sample ---\n")
+            seqs = []
+            for i in range(sample_batch_size):
+                text = decode(samples[i].tolist())
+                print(f"\n--- Generated ---")
+                print(text)
+                print("--- End sample ---\n")
+                seqs.append(text)
             # TODO evaluate samples with LLM perplexity
+            with open(os.path.join(out_dir, f'sample_step{iter_num}.json'), 'w') as f:
+                json.dump(seqs, f, indent=4)
         model.train()
     
     # evaluate the loss on train/val sets and write checkpoints
@@ -660,7 +667,6 @@ while True:
                 torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
     if iter_num == 0 and eval_only:
         break
-    breakpoint()
     # forward backward update, with optional gradient accumulation to simulate larger batch size
     # and using the GradScaler if data type is float16
     for micro_step in range(gradient_accumulation_steps):
