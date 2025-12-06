@@ -4,9 +4,10 @@
 # Model type
 model_type = 'diffusion'  # 'gpt2' or 'diffusion'
 
-out_dir = 'out-shakespeare-diffusion'
+out_dir = 'out-shakespeare-diffusion-debug'
 eval_interval = 1 # keep frequent because we'll overfit
 sample_interval = 500  # generate samples frequently to see progress
+sample_batch_size = 5
 log_interval = 100 # don't print too too often
 
 # we expect to overfit on this small dataset, so only save when val improves

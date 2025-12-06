@@ -256,7 +256,7 @@ model_args = dict(n_layer=n_layer,
                   model_type=model_type,) # start with model_args from command line
 if meta_vocab_size is None:
     print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
-model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
+model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50258
 
 if init_from.startswith('gpt2'):
     print(f"Initializing from OpenAI GPT-2 weights: {init_from}")
@@ -605,12 +605,14 @@ while True:
                 context_tokens = get_random_context(
                     raw_model.config.context_len, batch_size=sample_batch_size
                 )
-            context = decode(context_tokens[0].tolist())
             print(f"\n--- Context ---")
-            print(context)
+            for i in range(sample_batch_size):
+                context = decode(context_tokens[i].tolist())
+                print(context)
+            # breakpoint()
             if model_type == 'diffusion':
                 samples = raw_model.sample(
-                    batch_size=1,
+                    batch_size=sample_batch_size,
                     seq_len=raw_model.config.sequence_len,
                     num_steps=None,
                     temperature=1.0,

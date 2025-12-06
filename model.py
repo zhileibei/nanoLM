@@ -492,6 +492,7 @@ class Transformer(nn.Module):
         temperature=1.0,
         device=None,
         context_tokens=None,
+        seed=42,
     ):
         """
         Generate samples using top-K parallel decoding (LLaDA baseline).
@@ -512,7 +513,10 @@ class Transformer(nn.Module):
             device = self.get_device()
         if num_steps is None:
             num_steps = seq_len  # Maximum possible steps
-
+        rng = None
+        if temperature > 0:
+            rng = torch.Generator(device=device)
+            rng.manual_seed(seed)
         # Start from all mask tokens
         x = torch.full(
             (batch_size, seq_len),
@@ -548,7 +552,18 @@ class Transformer(nn.Module):
 
             # Get confidence scores (max probability for each position)
             probs = F.softmax(logits / temperature, dim=-1)
-            confidences, predicted_tokens = torch.max(probs, dim=-1)  # (B, T)
+            if temperature > 0:
+                # Sample tokens stochastically
+                B, T, V = probs.shape
+                predicted_tokens = torch.multinomial(
+                    probs.view(B * T, V), 
+                    num_samples=1
+                ).view(B, T)  # (B, T)
+
+                # Get confidence (probability) of sampled tokens
+                confidences = probs.gather(dim=-1, index=predicted_tokens.unsqueeze(-1)).squeeze(-1)  # (B, T)
+            else:
+                confidences, predicted_tokens = torch.max(probs, dim=-1)  # (B, T)
 
             # Mask out already-decoded positions
             confidences = confidences.masked_fill(~masked_positions, -float("inf"))
@@ -576,6 +591,7 @@ class Transformer(nn.Module):
         temperature=1.0,
         device=None,
         context_tokens=None,
+        seed=42,
     ):
         """
         Generate samples using confidence-aware parallel decoding (Fast-dLLM).
@@ -596,7 +612,10 @@ class Transformer(nn.Module):
             device = self.get_device()
         if num_steps is None:
             num_steps = seq_len  # Maximum possible steps
-
+        rng = None
+        if temperature > 0:
+            rng = torch.Generator(device=device)
+            rng.manual_seed(seed)
         # Start from all mask tokens
         x = torch.full(
             (batch_size, seq_len),
@@ -632,7 +651,18 @@ class Transformer(nn.Module):
 
             # Get confidence scores (max probability for each position)
             probs = F.softmax(logits / temperature, dim=-1)
-            confidences, predicted_tokens = torch.max(probs, dim=-1)  # (B, T)
+            if temperature > 0:
+                # Sample tokens stochastically
+                B, T, V = probs.shape
+                predicted_tokens = torch.multinomial(
+                    probs.view(B * T, V), 
+                    num_samples=1
+                ).view(B, T)  # (B, T)
+
+                # Get confidence (probability) of sampled tokens
+                confidences = probs.gather(dim=-1, index=predicted_tokens.unsqueeze(-1)).squeeze(-1)  # (B, T)
+            else:
+                confidences, predicted_tokens = torch.max(probs, dim=-1)  # (B, T)
 
             # Select positions above threshold (only among masked positions)
             if step < num_steps - 1:
