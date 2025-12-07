@@ -28,4 +28,20 @@ export WANDB_START_METHOD="thread"
 export TINKER_API_KEY=tml-qsuOJx8ByMWeObWa9bTEGE5ivgL0IPW9OCZd4kE2ShbYTzylSqvm6sGOAfJXtKKtBAAAA
 
 python train.py config/train_shakespeare.py
-python perplexity_curve.py config/train_shakespeare.py
+
+INPUT_DIR="out-shakespeare-100ksteps"
+OUT_DIR="$INPUT_DIR/perplexity"
+
+mkdir -p "$OUT_DIR"
+
+for input_file in "$INPUT_DIR"/*.json; do
+    base=$(basename "$input_file")
+    output_file="$OUT_DIR/$base"
+
+    python bench_perplexity.py \
+        --input_file "$input_file" \
+        --output_file "$output_file"
+done
+
+
+python perplexity_curve.py --out_dir=$OUT_DIR
