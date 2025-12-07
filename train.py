@@ -57,6 +57,7 @@ batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch si
 sample_batch_size = 1
 block_size = 1024
 data_permuted = False # if True, use get_batch_random_order instead of get_batch
+num_permutations = 16 # Number of permutations for permuted get_batch. Only useful when data_permuted=True.
 # model type
 model_type = 'gpt2' # 'gpt2' or 'diffusion'
 # diffusion-specific parameters (only used when model_type='diffusion')
@@ -192,27 +193,40 @@ def get_batch(split):
         return x, x
     return x, y
 
-def get_batch_random_order(split):
-    if split == 'train':
-        data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-    else:
-        data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
-    ix = torch.randint(len(data) - block_size, (batch_size,))
-    segments = torch.stack([torch.from_numpy((data[i:i+block_size+1]).astype(np.int64)) for i in ix])
-    permutation_indices = torch.stack([torch.randperm(block_size+1) for _ in range(block_size)])
-    segments_permuted = torch.gather(segments, dim=1, index=permutation_indices)
-    x = segments_permuted[:, :-1]
-    y = segments_permuted[:, 1:]
-    if device_type == 'cuda':
-        # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
-        x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
-    else:
-        x, y = x.to(device), y.to(device)
-    return x, y
+def load_get_batch_random_order():
+    # parameters: num_permutations
+    permutation_list = []
+    # permutation_list.append([i for i in range(block_size+1)])
+    for index in range(num_permutations):
+        base_list = [i for i in range(block_size)]
+        base_list = base_list + torch.randn_like(base_list) * index
+        permutation = torch.argsort(base_list)
+        permutation = torch.cat(([0], permutation+1))
+        permutation_list.append(permutation)
+
+    def get_batch_random_order(split):
+        if split == 'train':
+            data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+        else:
+            data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+        ix = torch.randint(len(data) - block_size, (batch_size,))
+        segments = torch.stack([torch.from_numpy((data[i:i+block_size+1]).astype(np.int64)) for i in ix])
+        permutation_indices = torch.stack([permutation_list[torch.randint(num_permutations)] for _ in range(block_size)])
+        segments_permuted = torch.gather(segments, dim=1, index=permutation_indices)
+        x = segments_permuted[:, :-1]
+        y = segments_permuted[:, 1:]
+        if device_type == 'cuda':
+            # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
+            x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
+        else:
+            x, y = x.to(device), y.to(device)
+        return x, y
+    
+    return get_batch_random_order
 
 # Select get_batch implementation based on data_permuted flag
 if data_permuted:
-    get_batch = get_batch_random_order
+    get_batch = load_get_batch_random_order()
 
 # diffusion data loader (only used when model_type='diffusion')
 def get_diffusion_data_loader(data_path, batch_size, seq_len, device):

@@ -5,6 +5,7 @@ model_type = 'gpt2'  # 'gpt2' or 'diffusion'
 
 # Data loading
 data_permuted = True  # Use random order data loader (get_batch_random_order)
+num_permutations = 16
 
 out_dir = 'out-shakespeare-random-order-100ksteps'
 eval_interval = 100  # keep frequent because we'll overfit
