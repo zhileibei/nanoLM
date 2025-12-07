@@ -200,10 +200,10 @@ def load_get_batch_random_order():
     permutation_list = []
     # permutation_list.append([i for i in range(block_size+1)])
     for index in range(num_permutations):
-        base_list = [i for i in range(block_size)]
+        base_list = torch.tensor([i for i in range(block_size)])
         base_list = base_list + torch.randn_like(base_list) * index
         permutation = torch.argsort(base_list)
-        permutation = torch.cat(([0], permutation+1))
+        permutation = torch.cat((torch.tensor([0]), permutation+1))
         permutation_list.append(permutation)
 
     def get_batch_random_order(split):

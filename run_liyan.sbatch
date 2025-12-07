@@ -5,7 +5,7 @@
 #SBATCH -c 10
 #SBATCH -t 6:00:00
 #SBATCH -p mit_normal_gpu
-#SBATCH --gres=gpu:h100:1
+#SBATCH --gres=gpu:h200:1
 #SBATCH --mem=32G
 set -e
 
@@ -29,7 +29,7 @@ export TINKER_API_KEY=tml-qsuOJx8ByMWeObWa9bTEGE5ivgL0IPW9OCZd4kE2ShbYTzylSqvm6s
 
 python train.py config/train_shakespeare.py
 
-INPUT_DIR="out-shakespeare-10ksteps"
+INPUT_DIR="out-shakespeare-5ksteps"
 
 # Process all JSON files in one run (loads model only once)
 python bench_perplexity.py --input_file "$INPUT_DIR"/*.json
