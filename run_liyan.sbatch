@@ -29,19 +29,9 @@ export TINKER_API_KEY=tml-qsuOJx8ByMWeObWa9bTEGE5ivgL0IPW9OCZd4kE2ShbYTzylSqvm6s
 
 python train.py config/train_shakespeare.py
 
-INPUT_DIR="out-shakespeare-100ksteps"
-OUT_DIR="$INPUT_DIR/perplexity"
+INPUT_DIR="out-shakespeare-10ksteps"
 
-mkdir -p "$OUT_DIR"
+# Process all JSON files in one run (loads model only once)
+python bench_perplexity.py --input_file "$INPUT_DIR"/*.json
 
-for input_file in "$INPUT_DIR"/*.json; do
-    base=$(basename "$input_file")
-    output_file="$OUT_DIR/$base"
-
-    python bench_perplexity.py \
-        --input_file "$input_file" \
-        --output_file "$output_file"
-done
-
-
-python perplexity_curve.py --out_dir=$OUT_DIR
+python perplexity_curve.py --out_dir="$INPUT_DIR/perplexity"
