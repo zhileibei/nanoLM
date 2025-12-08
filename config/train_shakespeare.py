@@ -1,7 +1,7 @@
 # train a miniature character-level shakespeare model
 # good for debugging and playing on macbooks and such
 
-out_dir = 'out-shakespeare-5ksteps'
+out_dir = 'out-shakespeare-10ksteps'
 eval_interval = 100  # keep frequent because we'll overfit
 eval_iters = 200
 sample_interval = 250  # generate samples frequently to see progress
