@@ -680,7 +680,7 @@ class Transformer(nn.Module):
                 confidences, predicted_tokens = torch.max(probs, dim=-1)  # (B, T)
 
             # Select positions above threshold (only among masked positions)
-            if step < num_steps - 1:
+            if step > 0:
                 above_threshold = (confidences >= confidence_threshold) & masked_positions
             else:
                 above_threshold = masked_positions
