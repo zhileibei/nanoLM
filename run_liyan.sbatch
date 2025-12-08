@@ -5,7 +5,7 @@
 #SBATCH -c 10
 #SBATCH -t 6:00:00
 #SBATCH -p mit_normal_gpu
-#SBATCH --gres=gpu:h100:1
+#SBATCH --gres=gpu:h200:1
 #SBATCH --mem=32G
 set -e
 
@@ -27,5 +27,11 @@ export WANDB_START_METHOD="thread"
 # Tinker API key
 export TINKER_API_KEY=tml-qsuOJx8ByMWeObWa9bTEGE5ivgL0IPW9OCZd4kE2ShbYTzylSqvm6sGOAfJXtKKtBAAAA
 
-python train.py config/train_shakespeare.py
-python perplexity_curve.py config/train_shakespeare.py
+python train.py config/train_ar_random_order.py
+
+INPUT_DIR="out-shakespeare-random-order-5ksteps"
+
+# Process all JSON files in one run (loads model only once)
+python bench_perplexity.py --input_file "$INPUT_DIR"/*.json
+
+python perplexity_curve.py --out_dir="$INPUT_DIR/perplexity"

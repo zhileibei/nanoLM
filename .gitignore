@@ -15,4 +15,7 @@ results/
 CLAUDE.md
 wandb/*
 out-*/*
+ppl_tinker.json
+samples.json
+
 figures/*

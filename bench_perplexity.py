@@ -23,10 +23,10 @@ dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Compute perplexity of generated samples')
-    parser.add_argument('--input_file', type=str, default=input_file,
-                        help='Input JSON file containing samples')
+    parser.add_argument('--input_file', type=str, nargs='+', default=[input_file],
+                        help='Input JSON file(s) containing samples (can specify multiple)')
     parser.add_argument('--output_file', type=str, default=output_file,
-                        help='Output JSON file for perplexity results')
+                        help='Output JSON file for perplexity results (ignored when processing multiple files)')
     parser.add_argument('--model_name', type=str, default=model_name,
                         help='HuggingFace model name for perplexity computation')
     parser.add_argument('--device', type=str, default=device,
@@ -121,68 +121,92 @@ def main():
 
     print(f"Model loaded successfully on {args.device}")
 
-    # Load samples
-    samples = load_samples(args.input_file)
+    # Process each input file
+    input_files = args.input_file if isinstance(args.input_file, list) else [args.input_file]
 
-    # Compute perplexity for each sample
-    perplexities = []
-    print("\nComputing perplexity for each sample...")
+    for file_idx, input_file_path in enumerate(input_files):
+        print(f"\n{'='*60}")
+        print(f"Processing file {file_idx+1}/{len(input_files)}: {input_file_path}")
+        print(f"{'='*60}")
 
-    for i, sample in enumerate(tqdm(samples, desc="Processing samples")):
-        try:
-            ppl = compute_perplexity(sample, model, tokenizer, args.device, args.max_length)
-            perplexities.append(ppl)
-            tqdm.write(f"Sample {i+1}: perplexity = {ppl:.2f}")
-        except Exception as e:
-            print(f"\nError processing sample {i+1}: {e}")
-            perplexities.append(float('inf'))
+        # Load samples
+        samples = load_samples(input_file_path)
 
-    # Compute statistics
-    valid_perplexities = [p for p in perplexities if not np.isinf(p)]
+        # Compute perplexity for each sample
+        perplexities = []
+        print("\nComputing perplexity for each sample...")
 
-    if len(valid_perplexities) == 0:
-        print("\nWarning: No valid perplexity scores computed!")
-        avg_perplexity = float('inf')
-        median_perplexity = float('inf')
-        min_perplexity = float('inf')
-        max_perplexity = float('inf')
-    else:
-        avg_perplexity = np.mean(valid_perplexities)
-        median_perplexity = np.median(valid_perplexities)
-        min_perplexity = np.min(valid_perplexities)
-        max_perplexity = np.max(valid_perplexities)
+        for i, sample in enumerate(tqdm(samples, desc="Processing samples")):
+            try:
+                ppl = compute_perplexity(sample, model, tokenizer, args.device, args.max_length)
+                perplexities.append(ppl)
+                tqdm.write(f"Sample {i+1}: perplexity = {ppl:.2f}")
+            except Exception as e:
+                print(f"\nError processing sample {i+1}: {e}")
+                perplexities.append(float('inf'))
 
-    # Prepare results
-    results = {
-        'model_name': args.model_name,
-        'num_samples': len(samples),
-        'perplexities': perplexities,
-        'statistics': {
-            'mean': float(avg_perplexity),
-            'median': float(median_perplexity),
-            'min': float(min_perplexity),
-            'max': float(max_perplexity),
-            'num_valid': len(valid_perplexities),
-            'num_invalid': len(perplexities) - len(valid_perplexities)
+        # Compute statistics
+        valid_perplexities = [p for p in perplexities if not np.isinf(p)]
+
+        if len(valid_perplexities) == 0:
+            print("\nWarning: No valid perplexity scores computed!")
+            avg_perplexity = float('inf')
+            median_perplexity = float('inf')
+            min_perplexity = float('inf')
+            max_perplexity = float('inf')
+        else:
+            avg_perplexity = np.mean(valid_perplexities)
+            median_perplexity = np.median(valid_perplexities)
+            min_perplexity = np.min(valid_perplexities)
+            max_perplexity = np.max(valid_perplexities)
+
+        # Prepare results
+        results = {
+            'input_file': input_file_path,
+            'model_name': args.model_name,
+            'num_samples': len(samples),
+            'perplexities': perplexities,
+            'statistics': {
+                'mean': float(avg_perplexity),
+                'median': float(median_perplexity),
+                'min': float(min_perplexity),
+                'max': float(max_perplexity),
+                'num_valid': len(valid_perplexities),
+                'num_invalid': len(perplexities) - len(valid_perplexities)
+            }
         }
-    }
 
-    # Save results
-    with open(args.output_file, 'w', encoding='utf-8') as f:
-        json.dump(results, f, indent=2)
+        # Determine output file name
+        if len(input_files) == 1:
+            output_path = args.output_file
+        else:
+            # Auto-generate output filename from input filename
+            input_dir = os.path.dirname(input_file_path)
+            input_basename = os.path.basename(input_file_path)
+            base_name = os.path.splitext(input_basename)[0]
 
-    print(f"\n{'='*60}")
-    print("Perplexity Results:")
-    print(f"{'='*60}")
-    print(f"Reference Model: {args.model_name}")
-    print(f"Number of samples: {len(samples)}")
-    print(f"Valid samples: {len(valid_perplexities)}")
-    print(f"Average perplexity: {avg_perplexity:.2f}")
-    print(f"Median perplexity: {median_perplexity:.2f}")
-    print(f"Min perplexity: {min_perplexity:.2f}")
-    print(f"Max perplexity: {max_perplexity:.2f}")
-    print(f"\nResults saved to: {args.output_file}")
-    print(f"{'='*60}")
+            # Create perplexity subdirectory
+            perplexity_dir = os.path.join(input_dir, 'perplexity')
+            os.makedirs(perplexity_dir, exist_ok=True)
+
+            output_path = os.path.join(perplexity_dir, input_basename)
+
+        # Save results
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2)
+
+        print(f"\n{'='*60}")
+        print("Perplexity Results:")
+        print(f"{'='*60}")
+        print(f"Reference Model: {args.model_name}")
+        print(f"Number of samples: {len(samples)}")
+        print(f"Valid samples: {len(valid_perplexities)}")
+        print(f"Average perplexity: {avg_perplexity:.2f}")
+        print(f"Median perplexity: {median_perplexity:.2f}")
+        print(f"Min perplexity: {min_perplexity:.2f}")
+        print(f"Max perplexity: {max_perplexity:.2f}")
+        print(f"\nResults saved to: {output_path}")
+        print(f"{'='*60}")
 
 if __name__ == '__main__':
     main()
