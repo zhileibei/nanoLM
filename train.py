@@ -67,6 +67,8 @@ sample_interval = 250 # how often to generate samples during diffusion training
 sample_iter_list = [2**i-1 for i in range(9)] # non-linear sample interval at the beginning
 confidence_threshold = 0.95 # for diffusion sampling
 time_conditioned = True if model_type == 'diffusion' else False
+nonmask_only = False # diffusion attention mask
+mask_token_id = 50257
 # model
 n_layer = 12
 n_head = 12
@@ -230,50 +232,6 @@ def load_get_batch_random_order():
 if data_permuted:
     get_batch = load_get_batch_random_order()
 
-# diffusion data loader (only used when model_type='diffusion')
-def get_diffusion_data_loader(data_path, batch_size, seq_len, device):
-    """
-    Simple data loader for text data (for diffusion training)
-    """
-    # Read the text file
-    with open(data_path, 'r', encoding='utf-8') as f:
-        text = f.read()
-    # Convert to tokens
-    tokens = encode_text(text)
-    # Create batches
-    num_batches = len(tokens) // (batch_size * seq_len)
-    tokens = tokens[:num_batches * batch_size * seq_len]
-    tokens = tokens.view(batch_size, -1)
-    # Generator function
-    def data_generator():
-        while True:
-            for i in range(0, tokens.size(1) - seq_len, seq_len):
-                batch = tokens[:, i:i+seq_len].to(device)
-                yield batch
-    return data_generator()
-
-# # diffusion data loader (only used when model_type='diffusion')
-# def get_diffusion_data_loader(data_path, batch_size, seq_len, device):
-#     """
-#     Simple data loader for text data (for diffusion training)
-#     """
-#     # Read the text file
-#     with open(data_path, 'r', encoding='utf-8') as f:
-#         text = f.read()
-#     # Convert to tokens
-#     tokens = encode_text(text)
-#     # Create batches
-#     num_batches = len(tokens) // (batch_size * seq_len)
-#     tokens = tokens[:num_batches * batch_size * seq_len]
-#     tokens = tokens.view(batch_size, -1)
-#     # Generator function
-#     def data_generator():
-#         while True:
-#             for i in range(0, tokens.size(1) - seq_len, seq_len):
-#                 batch = tokens[:, i:i+seq_len].to(device)
-#                 yield batch
-#     return data_generator()
-
 # def get_random_context(dataset_tokens, context_len, batch_size=1):
 def get_random_context(context_len, batch_size=1):
     """Get random context tokens from dataset (for sampling)"""
@@ -302,7 +260,7 @@ else:
     # ok let's assume gpt-2 encodings by default
     print("No meta.pkl found, assuming GPT-2 encodings...")
     enc = tiktoken.get_encoding("gpt2")
-    MASK_TOKEN_ID = 50257
+    MASK_TOKEN_ID = mask_token_id
     encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
     decode = lambda l: enc.decode([i for i in l if i != MASK_TOKEN_ID])
 
@@ -315,8 +273,7 @@ model_args = dict(n_layer=n_layer,
                   vocab_size=None, 
                   dropout=dropout,
                   context_len=context_len,
-                  model_type=model_type,
-                  time_conditioned=time_conditioned) # start with model_args from command line
+                  model_type=model_type) # start with model_args from command line
 if meta_vocab_size is None:
     print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
 model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50258
@@ -337,21 +294,9 @@ elif init_from == 'scratch':
         # Diffusion model
         # model_args['vocab_size'] = 128
         model_args['diffusion_steps'] = diffusion_steps
-    else:
-        # GPT-2 model
-        gptconf = GPTConfig(
-            sequence_len=block_size,
-            vocab_size=model_args['vocab_size'],
-            causal=True,
-            time_conditioned=False,
-            n_layer=n_layer,
-            n_head=n_head,
-            n_kv_head=n_head,
-            n_embd=n_embd,
-            dropout=dropout,
-            bias=bias
-        )
-        model = Transformer(gptconf)
+        model_args['time_conditioned'] = time_conditioned
+        model_args['nonmask_only'] = nonmask_only
+        model_args['mask_token_id'] = mask_token_id
 elif init_from == 'resume':
     print(f"Resuming training from {out_dir}")
     # resume training from a checkpoint.
@@ -373,8 +318,9 @@ if model_type == 'diffusion':
     diffusion_config = DiffusionConfig(
         sequence_len=model_args['sequence_len'],
         vocab_size=model_args['vocab_size'],
-        mask_token_id=MASK_TOKEN_ID,
+        mask_token_id=model_args['mask_token_id'],
         causal=False,
+        nonmask_only=model_args['nonmask_only'],
         time_conditioned=model_args['time_conditioned'],
         diffusion_steps=model_args.get('diffusion_steps', diffusion_steps),
         context_len=model_args.get('context_len', context_len),
@@ -392,6 +338,7 @@ else:
         vocab_size=model_args['vocab_size'],
         causal=True,
         time_conditioned=False,
+        nonmask_only=False,
         n_layer=model_args['n_layer'],
         n_head=model_args['n_head'],
         n_kv_head=model_args['n_head'],
@@ -469,28 +416,6 @@ def estimate_loss():
     model.train()
     return out
 
-# # Diffusion training step
-# def train_diffusion_step(model, x_0, mask_schedule):
-#     """
-#     Single diffusion training step
-#     """
-#     B, _ = x_0.shape
-#     device = x_0.device
-#     # Sample random timesteps
-#     t = torch.randint(0, mask_schedule.num_timesteps, (B,), device=device)
-#     # Add mask to get x_t
-#     x_t = mask_schedule.add_masks(x_0, t)
-#     # Forward pass: predict the original tokens
-#     with ctx:
-#         logits = model(x_t, t)  # (B, T, vocab_size)
-#         # Compute loss only on masked positions
-#         mask = x_t == mask_schedule.mask_token_id  # (B, T)
-#         loss = F.cross_entropy(
-#             logits.view(-1, logits.size(-1)), x_0.view(-1), reduction='none'
-#         )
-#         loss = (loss.view(B, -1) * mask).sum() / mask.sum()  # Average over masked positions only
-#     return loss
-
 # learning rate decay scheduler (cosine with warmup)
 def get_lr(it):
     # 1) linear warmup for warmup_iters steps
@@ -521,127 +446,7 @@ if model_type == 'diffusion':
         mask_token_id=model.config.mask_token_id,
         # context_len=model.config.context_len
     )
-    # # Create data loader for text files
-    # # Try multiple possible locations for the text file
-    # possible_paths = [
-    #     os.path.join(data_dir, f'{dataset}.txt'),          # data/shakespeare/shakespeare.txt
-    #     os.path.join(data_dir, 'input.txt'),               # data/shakespeare/input.txt
-    #     os.path.join('data', f'{dataset}_char', 'input.txt'), # data/shakespeare_char/input.txt
-    #     'data/tiny_shakespeare.txt',                       # fallback
-    # ]
-    
-    # data_path = None
-    # for path in possible_paths:
-    #     if os.path.exists(path):
-    #         data_path = path
-    #         print(f"Found text file: {data_path}")
-    #         break
-    
-    # if data_path is None:
-    #     raise FileNotFoundError(
-    #         f"Could not find text file for dataset '{dataset}'. Tried:\n" + 
-    #         "\n".join(f"  - {p}" for p in possible_paths) +
-    #         "\n\nPlease run the prepare script or place a text file in one of these locations."
-    #     )
-    # diffusion_data_loader = get_diffusion_data_loader(data_path, batch_size, block_size, device)
-    # # Load dataset tokens for context sampling
-    # dataset_tokens = None
-    # if model.config.context_len > 0:
-    #     with open(data_path, 'r', encoding='utf-8') as f:
-    #         text = f.read()
-    #     dataset_tokens = encode_text(text)
-    #     print(f"Loaded {len(dataset_tokens)} tokens from dataset for context sampling")
     print("Diffusion setup complete!")
-
-
-    # # -----------------------------------------------------------------------------
-    # # DIFFUSION TRAINING LOOP
-    # # -----------------------------------------------------------------------------
-    # print("Starting diffusion training loop...")
-    # t0 = time.time()
-    # raw_model = model.module if ddp else model
-    # while True:
-    #     # determine and set the learning rate for this iteration
-    #     lr = get_lr(iter_num) if decay_lr else learning_rate
-    #     for param_group in optimizer.param_groups:
-    #         param_group['lr'] = lr
-        
-    #     # Sample generation (diffusion-specific)
-    #     if iter_num % sample_interval == 0 and master_process:
-    #         model.eval()
-    #         with torch.no_grad():
-    #             # Get random context if context_len > 0
-    #             context_tokens = None
-    #             if raw_model.config.context_len > 0:
-    #                 context_tokens = get_random_context(
-    #                     raw_model.config.context_len, batch_size=1
-    #                 )
-    #             samples = raw_model.sample(
-    #                 batch_size=1,
-    #                 seq_len=raw_model.config.sequence_len,
-    #                 num_steps=None,
-    #                 temperature=1.0,
-    #                 device=raw_model.get_device(),
-    #                 context_tokens=context_tokens,
-    #                 method="confidence",
-    #                 confidence_threshold=confidence_threshold,
-    #             )
-    #             # Decode samples to text
-    #             text = decode_tokens(samples[0])
-    #             print(f"\n--- Sample at iter {iter_num} ---")
-    #             print(text)
-    #             print("--- End sample ---\n")
-    #         model.train()
-        
-    #     # checkpoint saving
-    #     if iter_num % eval_interval == 0 and master_process and iter_num > 0:
-    #         checkpoint = {
-    #             'model': raw_model.state_dict(),
-    #             'optimizer': optimizer.state_dict(),
-    #             'model_args': model_args,
-    #             'iter_num': iter_num,
-    #             'best_val_loss': best_val_loss,
-    #             'config': config,
-    #         }
-    #         print(f"saving checkpoint to {out_dir}")
-    #         torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
-        
-    #     if iter_num == 0 and eval_only:
-    #         break
-        
-    #     # Training step
-    #     x_0 = next(diffusion_data_loader)
-    #     loss = train_diffusion_step(model, x_0, mask_schedule)
-    #     # backward pass
-    #     scaler.scale(loss).backward()
-    #     # step the optimizer
-    #     if grad_clip != 0.0:
-    #         scaler.unscale_(optimizer)
-    #         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-    #     scaler.step(optimizer)
-    #     scaler.update()
-    #     optimizer.zero_grad(set_to_none=True)
-        
-    #     # timing and logging
-    #     t1 = time.time()
-    #     dt = t1 - t0
-    #     t0 = t1
-    #     if iter_num % log_interval == 0 and master_process:
-    #         lossf = loss.item()
-    #         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms, lr {lr:.6f}")
-    #         if wandb_log:
-    #             wandb.log({
-    #                 "iter": iter_num,
-    #                 "train/loss": lossf,
-    #                 "lr": lr,
-    #             })
-        
-    #     iter_num += 1
-        
-    #     # termination conditions
-    #     if iter_num > max_iters:
-    #         break
-
 
 # training loop
 print(f"Starting {model_type} training loop...")
@@ -660,7 +465,7 @@ while True:
         param_group['lr'] = lr
 
     # Sample generation (diffusion-specific)
-    if should_sample(iter_num) and master_process:
+    if iter_num != 0 and should_sample(iter_num) and master_process:
         model.eval()
         with torch.no_grad():
             print(f"\n--- Sample at iter {iter_num} ---")
@@ -674,7 +479,6 @@ while True:
             for i in range(sample_batch_size):
                 context = decode(context_tokens[i].tolist())
                 print(context)
-            # breakpoint()
             if model_type == 'diffusion':
                 samples = raw_model.sample(
                     batch_size=sample_batch_size,

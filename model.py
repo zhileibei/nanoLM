@@ -21,6 +21,7 @@ class GPTConfig:
     vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     causal: bool = True
     time_conditioned: bool = False
+    nonmask_only: bool = False # custom attention mask
     n_layer: int = 6
     n_head: int = 6 # number of query heads (GQA)
     n_kv_head: int = 6 # number of key/value heads (GQA)
@@ -33,6 +34,7 @@ class GPTConfig:
 class DiffusionConfig(GPTConfig):
     vocab_size: int = 128  # Full ASCII (0-127), where 0 is reserved for mask
     mask_token_id: int = 0  # NUL character used as [MASK] token
+    nonmask_only: bool = False # custom attention mask
     causal: bool = False  # non-causal attention for diffusion
     time_conditioned: bool = True  # time-conditioning for diffusion
     diffusion_steps: int = 128
@@ -71,6 +73,8 @@ class SelfAttention(nn.Module):
         # output projection
         self.layer_idx = layer_idx
         self.causal = config.causal
+        self.nonmask_only = getattr(config, 'nonmask_only', False)
+        self.mask_token_id = getattr(config, 'mask_token_id', None)
         self.n_head = config.n_head
         self.n_kv_head = config.n_kv_head
         self.n_embd = config.n_embd
@@ -92,7 +96,7 @@ class SelfAttention(nn.Module):
         #     self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
         #                                 .view(1, 1, config.block_size, config.block_size))
 
-    def forward(self, x, cos_sin, kv_cache):
+    def forward(self, x, cos_sin, kv_cache, input_ids=None):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
@@ -126,9 +130,20 @@ class SelfAttention(nn.Module):
         
         # Attention: queries attend to key/values autoregressively. A few cases to handle:
         enable_gqa = self.n_head != self.n_kv_head # Group Query Attention (QGA): duplicate key/value heads to match query heads
+        
+        # Create custom mask for nonmask_only mode
+        custom_mask = None
+        if self.nonmask_only:
+            assert input_ids is not None and self.mask_token_id is not None
+            # Create mask where True = attend, False = don't attend
+            # Shape: (B, Tk) -> need to broadcast to (B, n_head, Tq, Tk)
+            nonmask_positions = (input_ids != self.mask_token_id)  # (B, Tk)
+            custom_mask = nonmask_positions.unsqueeze(1).unsqueeze(2)  # (B, 1, 1, Tk)
+            custom_mask = custom_mask.expand(B, self.n_head, Tq, Tk)  # (B, n_head, Tq, Tk)
         if not self.causal:
             # Non-causal attention (e.g. for diffusion models)
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=False, enable_gqa=enable_gqa)
+            attn_mask = custom_mask if custom_mask is not None else None
+            y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=False, enable_gqa=enable_gqa)
         elif kv_cache is None or Tq == Tk:
             # During training (no KV cache), attend as usual with causal attention
             # And even if there is KV cahce, we can still use this simple version when Tq == Tk
@@ -182,9 +197,9 @@ class Block(nn.Module):
         # self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x, cos_sin, kv_cache):
+    def forward(self, x, cos_sin, kv_cache, input_ids=None):
         # x = x + self.attn(self.ln_1(x))
-        x = x + self.attn(norm(x), cos_sin, kv_cache)
+        x = x + self.attn(norm(x), cos_sin, kv_cache, input_ids=input_ids)
         # x = x + self.mlp(self.ln_2(x))
         x = x + self.mlp(norm(x))
         return x
@@ -327,7 +342,7 @@ class Transformer(nn.Module):
         # x = self.transformer.drop(tok_emb + pos_emb)
         x = norm(x)
         for block in self.blocks:
-            x = block(x, cos_sin, kv_cache)
+            x = block(x, cos_sin, kv_cache, input_ids=idx)
         # x = self.transformer.ln_f(x)
         x = norm(x)
 
@@ -538,7 +553,7 @@ class Transformer(nn.Module):
             masked_positions[:, :context_len] = False
 
         # Decode step by step
-        for step in range(num_steps):
+        for step in range(num_steps - 1, -1, -1):
             # Check if all tokens are decoded
             if not masked_positions.any():
                 break
@@ -637,7 +652,7 @@ class Transformer(nn.Module):
             masked_positions[:, :context_len] = False
 
         # Decode step by step
-        for step in range(num_steps):
+        for step in range(num_steps - 1, -1, -1):
             # Check if all tokens are decoded
             if not masked_positions.any():
                 break
