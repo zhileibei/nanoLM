@@ -61,8 +61,10 @@ model_type = 'gpt2' # 'gpt2' or 'diffusion'
 # diffusion-specific parameters (only used when model_type='diffusion')
 diffusion_steps = 128
 context_len = 16
-sample_interval = 500 # how often to generate samples during diffusion training
+sample_interval = 250 # how often to generate samples during diffusion training
+sample_iter_list = [2**i-1 for i in range(9)] # non-linear sample interval at the beginning
 confidence_threshold = 0.95 # for diffusion sampling
+time_conditioned = True if model_type == 'diffusion' else False
 # model
 n_layer = 12
 n_head = 12
@@ -253,7 +255,8 @@ model_args = dict(n_layer=n_layer,
                   vocab_size=None, 
                   dropout=dropout,
                   context_len=context_len,
-                  model_type=model_type,) # start with model_args from command line
+                  model_type=model_type,
+                  time_conditioned=time_conditioned) # start with model_args from command line
 if meta_vocab_size is None:
     print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
 model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50258
@@ -312,7 +315,7 @@ if model_type == 'diffusion':
         vocab_size=model_args['vocab_size'],
         mask_token_id=MASK_TOKEN_ID,
         causal=False,
-        time_conditioned=True,
+        time_conditioned=model_args['time_conditioned'],
         diffusion_steps=model_args.get('diffusion_steps', diffusion_steps),
         context_len=model_args.get('context_len', context_len),
         n_layer=model_args['n_layer'],
@@ -587,6 +590,8 @@ t0 = time.time()
 # local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 # running_mfu = -1.0  # commented out MFU tracking
+def should_sample(iter_num):
+    return (iter_num < 256 and iter_num in sample_iter_list) or (iter_num >=256 and iter_num % sample_interval == 0)
 while True:
 
     # determine and set the learning rate for this iteration
@@ -595,7 +600,7 @@ while True:
         param_group['lr'] = lr
 
     # Sample generation (diffusion-specific)
-    if iter_num % sample_interval == 0 and master_process:
+    if should_sample(iter_num) and master_process:
         model.eval()
         with torch.no_grad():
             print(f"\n--- Sample at iter {iter_num} ---")

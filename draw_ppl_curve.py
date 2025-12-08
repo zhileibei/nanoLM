@@ -5,8 +5,9 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 # directory containing json files
-DIR = Path("/home/beizl42/projects/nanoLM/out-shakespeare/perplexity")
+# DIR = Path("/home/beizl42/projects/nanoLM/out-shakespeare/perplexity")
 # DIR = Path("/home/beizl42/projects/nanoLM/out-shakespeare-diffusion/perplexity")
+DIR = Path("/home/beizl42/projects/nanoLM/out-shakespeare-diffusion-100ksteps/perplexity")
 
 # regex to extract step number from filename
 STEP_RE = re.compile(r"step(\d+)")
@@ -39,6 +40,7 @@ plt.figure()
 plt.plot(steps, scores, marker="o")
 plt.xlabel("Step")
 plt.ylabel("Score")
+plt.yscale('log')
 plt.title("Score vs Step")
 plt.grid(True)
 plt.tight_layout()
