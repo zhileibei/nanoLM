@@ -200,11 +200,12 @@ def load_get_batch_random_order():
     permutation_list = []
     # permutation_list.append([i for i in range(block_size+1)])
     for index in range(num_permutations):
-        base_list = torch.tensor([i for i in range(block_size)])
-        base_list = base_list + torch.randn_like(base_list) * index
+        base_list = torch.arange(block_size, dtype=torch.float32)
+        base_list = base_list + torch.randn(block_size) * index
         permutation = torch.argsort(base_list)
         permutation = torch.cat((torch.tensor([0]), permutation+1))
         permutation_list.append(permutation)
+    permutation_tensor = torch.stack(permutation_list)  # Shape: (num_permutations, block_size+1)
 
     def get_batch_random_order(split):
         if split == 'train':
@@ -213,7 +214,9 @@ def load_get_batch_random_order():
             data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
         ix = torch.randint(len(data) - block_size, (batch_size,))
         segments = torch.stack([torch.from_numpy((data[i:i+block_size+1]).astype(np.int64)) for i in ix])
-        permutation_indices = torch.stack([permutation_list[torch.randint(num_permutations)] for _ in range(block_size)])
+        # permutation_indices = torch.stack([permutation_list[torch.randint(num_permutations, (1,))] for _ in range(block_size)])
+        perm_idx = torch.randint(0, num_permutations, (batch_size,))
+        permutation_indices = permutation_tensor[perm_idx]
         segments_permuted = torch.gather(segments, dim=1, index=permutation_indices)
         x = segments_permuted[:, :-1]
         y = segments_permuted[:, 1:]

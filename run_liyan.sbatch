@@ -27,9 +27,9 @@ export WANDB_START_METHOD="thread"
 # Tinker API key
 export TINKER_API_KEY=tml-qsuOJx8ByMWeObWa9bTEGE5ivgL0IPW9OCZd4kE2ShbYTzylSqvm6sGOAfJXtKKtBAAAA
 
-python train.py config/train_shakespeare.py
+python train.py config/train_ar_random_order.py
 
-INPUT_DIR="out-shakespeare-5ksteps"
+INPUT_DIR="out-shakespeare-random-order-5ksteps"
 
 # Process all JSON files in one run (loads model only once)
 python bench_perplexity.py --input_file "$INPUT_DIR"/*.json
