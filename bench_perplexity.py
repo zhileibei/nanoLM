@@ -79,11 +79,6 @@ def compute_perplexity(text, model, tokenizer, device, max_length):
 
 def main():
     args = parse_args()
-    
-    # check if output file exists
-    if os.path.exists(args.output_file):
-        print("Already calculated")
-        return
 
     print(f"Loading reference model: {args.model_name}")
     print(f"Device: {args.device}")
