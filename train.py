@@ -155,7 +155,7 @@ class MaskedDiffusionSchedule:
     def __init__(self, num_timesteps, mask_token_id, context_len=0, arlike_mask=False):
         self.num_timesteps = num_timesteps
         self.mask_token_id = mask_token_id
-        self.context_len = context_len
+        # self.context_len = context_len
         self.arlike_mask = arlike_mask
 
         # Linear schedule: probability of masking increases linearly.
@@ -222,7 +222,7 @@ class MaskedDiffusionSchedule:
             visible_len = T - f            # number of visible tokens on the left
 
             # Always keep at least context_len tokens visible at the start if desired.
-            visible_len = max(visible_len, self.context_len)
+            # visible_len = max(visible_len, self.context_len)
 
             if visible_len < T:
                 # Mask the right-side suffix [visible_len, T).
@@ -557,7 +557,7 @@ if model_type == 'diffusion':
     mask_schedule = MaskedDiffusionSchedule(
         num_timesteps=model.config.diffusion_steps,
         mask_token_id=model.config.mask_token_id,
-        context_len=model.config.context_len,
+        # context_len=model.config.context_len,
         arlike_mask=arlike_mask,
     )
     print("Diffusion setup complete!")
