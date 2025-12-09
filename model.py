@@ -39,6 +39,7 @@ class DiffusionConfig(GPTConfig):
     time_conditioned: bool = True  # time-conditioning for diffusion
     diffusion_steps: int = 128
     context_len: int = 16  # Number of prefix tokens that are never masked
+    diff_casual: bool = False  # if True, combine causal mask with nonmask_only mask
 
 def norm(x):
     # Purely functional rmsnorm with no learnable params
@@ -75,6 +76,7 @@ class SelfAttention(nn.Module):
         self.causal = config.causal
         self.nonmask_only = getattr(config, 'nonmask_only', False)
         self.mask_token_id = getattr(config, 'mask_token_id', None)
+        self.diff_casual = getattr(config, 'diff_casual', False)  # new
         self.n_head = config.n_head
         self.n_kv_head = config.n_kv_head
         self.n_embd = config.n_embd
@@ -144,6 +146,24 @@ class SelfAttention(nn.Module):
             # Non-causal attention (e.g. for diffusion models)
             attn_mask = custom_mask if custom_mask is not None else None
             y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=False, enable_gqa=enable_gqa)
+        elif self.causal and self.diff_casual and custom_mask is not None and (kv_cache is None or Tq == Tk):
+            # Causal + nonmask_only combined. We build a manual causal mask and
+            # AND it with custom_mask, then pass it as attn_mask with is_causal=False.
+
+            # causal_mask shape: (1, 1, Tq, Tk), True = keep, False = mask
+            causal_mask = torch.tril(
+                torch.ones(Tq, Tk, dtype=torch.bool, device=q.device)
+            ).unsqueeze(0).unsqueeze(1)  # (1, 1, Tq, Tk)
+
+            # final_mask shape: (B, n_head, Tq, Tk)
+            final_mask = causal_mask & custom_mask
+
+            y = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=final_mask,
+                is_causal=False,  # we already encoded causality in final_mask
+                enable_gqa=enable_gqa,
+            )
         elif kv_cache is None or Tq == Tk:
             # During training (no KV cache), attend as usual with causal attention
             # And even if there is KV cahce, we can still use this simple version when Tq == Tk
@@ -701,6 +721,94 @@ class Transformer(nn.Module):
         return x
 
     @torch.inference_mode()
+    def sample_ar_left_to_right(
+        self,
+        batch_size,
+        seq_len,
+        temperature=1.0,
+        device=None,
+        context_tokens=None,
+    ):
+        """
+        Autoregressive-style sampling from left to right.
+
+        At each step, we generate exactly ONE new token at position `pos`,
+        starting from the leftmost non-context position and moving right.
+
+        This is designed to pair with an AR-like masking schedule in training where:
+        - The left prefix is "known context" (real tokens).
+        - The right suffix is treated as "future" (masked with [MASK]).
+        """
+        if device is None:
+            device = self.get_device()
+
+        mask_id = self.config.mask_token_id
+
+        # 1. Initialize the whole sequence with [MASK] tokens.
+        x = torch.full(
+            (batch_size, seq_len),
+            mask_id,
+            dtype=torch.long,
+            device=device,
+        )
+
+        # 2. If context tokens are provided, place them at the beginning
+        #    and never overwrite them.
+        context_len = 0
+        if context_tokens is not None:
+            context_tokens = context_tokens.to(device)
+            context_len = context_tokens.size(1)
+            assert context_len <= seq_len, "Context longer than sequence length."
+            x[:, :context_len] = context_tokens
+
+        # 3. Generate tokens from left to right:
+        #    positions: context_len, context_len+1, ..., seq_len-1
+        for pos in range(context_len, seq_len):
+            # Number of unknown "future" tokens to the right of `pos`.
+            # Example: seq_len = 10, pos = 3 -> future_len = 6 (positions 4..9)
+            future_len = (seq_len - 1) - pos
+            if future_len < 0:
+                future_len = 0
+
+            # Map future_len in [0, seq_len-1] to a diffusion timestep t in
+            # [0, diffusion_steps-1]. Larger future_len -> larger t.
+            if seq_len > 1:
+                frac_future = float(future_len) / float(seq_len - 1)
+            else:
+                frac_future = 0.0
+
+            t_value = int(round(frac_future * (self.config.diffusion_steps - 1)))
+            t_value = max(0, min(t_value, self.config.diffusion_steps - 1))
+
+            t_batch = torch.full(
+                (batch_size,),
+                t_value,
+                device=device,
+                dtype=torch.long,
+            )
+
+            # 3.1 Ensure that all positions to the right of `pos` are [MASK],
+            #     so the model cannot "peek" at future tokens.
+            if pos + 1 < seq_len:
+                x[:, pos + 1 :] = mask_id
+
+            # 3.2 Run the diffusion transformer to predict logits at timestep t.
+            logits = self.forward(x, t_batch)  # (B, T, vocab_size)
+
+            # 3.3 Get probabilities and pick the next token at position `pos`.
+            logits_pos = logits[:, pos, :]  # (B, V)
+            if temperature != 1.0:
+                logits_pos = logits_pos / temperature
+            probs = F.softmax(logits_pos, dim=-1)  # (B, V)
+
+            # Greedy decoding; you can replace with sampling if you like.
+            next_token = torch.argmax(probs, dim=-1)  # (B,)
+
+            # 3.4 Write the new token at this position.
+            x[:, pos] = next_token
+
+        return x
+    @torch.inference_mode()
     def sample(
         self,
         batch_size,
@@ -744,6 +852,17 @@ class Transformer(nn.Module):
                 temperature,
                 device,
                 context_tokens,
+            )
+        elif method == "ar":
+            # Autoregressive left-to-right decoding.
+            # num_steps is not used here because we always take exactly
+            # (seq_len - context_len) decoding steps.
+            return self.sample_ar_left_to_right(
+                batch_size=batch_size,
+                seq_len=seq_len,
+                temperature=temperature,
+                device=device,
+                context_tokens=context_tokens,
             )
         else:
             raise ValueError(f"Unknown sampling method: {method}")

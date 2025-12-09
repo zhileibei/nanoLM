@@ -16,13 +16,14 @@ always_save_checkpoint = False
 
 wandb_log = True  # override via command line if you like
 wandb_project = 'shakespeare'
-wandb_run_name = 'mini-diffusion'
-time_conditioned = True
+wandb_run_name = 'mini-diffusion-arlike-mask-tctrue-new'
+
 dataset = 'shakespeare'
 gradient_accumulation_steps = 1
 batch_size = 64
 block_size = 256  # context of up to 256 previous characters
 context_len = 16  # Number of prefix tokens that are never masked
+time_conditioned = True
 # baby Diffusion model :)
 n_layer = 6
 n_head = 6
@@ -45,4 +46,5 @@ warmup_iters = 200  # not super necessary potentially
 # device = 'cuda'  # Use GPU
 # dtype = 'bfloat16'  # Use bfloat16 for H100/H200
 # compile = True  # Enable torch.compile for
-arlike_mask = False  # use AR-like left-to-right masking during diffusion training
+arlike_mask = True  # use AR-like left-to-right masking during diffusion training
+ar_sampling = False   # if True, use AR left-to-right decoding during sampling

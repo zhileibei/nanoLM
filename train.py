@@ -69,6 +69,10 @@ confidence_threshold = 0.95 # for diffusion sampling
 time_conditioned = True if model_type == 'diffusion' else False
 nonmask_only = False # diffusion attention mask
 mask_token_id = 50257
+arlike_mask = False   # if True, use AR-like left-to-right masking schedule during training
+ar_sampling = False   # if True, use AR left-to-right decoding during sampling
+diff_casual = False  # if True, use causal + nonmask_only combined mask for diffusion
+causal = False        # default causal flag for diffusion attention (can be overridden)
 # model
 n_layer = 12
 n_head = 12
@@ -139,37 +143,97 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 class MaskedDiffusionSchedule:
     """
     Masked diffusion schedule for discrete diffusion.
-    At each timestep, we have a probability of masking a token with [MASK].
+
+    Two modes:
+    - arlike_mask == False:
+        Original behavior. At each timestep t, randomly mask tokens with probability p_t.
+    - arlike_mask == True:
+        AR-like behavior. At each timestep t, mask a right-side suffix so that the
+        left prefix is "known context" and the right suffix is "future" (all [MASK]).
     """
-    def __init__(self, num_timesteps, mask_token_id, context_len=0):
+    def __init__(self, num_timesteps, mask_token_id, context_len=0, arlike_mask=False):
         self.num_timesteps = num_timesteps
         self.mask_token_id = mask_token_id
-        # self.context_len = context_len
-        # Linear schedule: probability of masking increases linearly
+        self.context_len = context_len
+        self.arlike_mask = arlike_mask
+
+        # Linear schedule: probability of masking increases linearly.
+        # This is only used in the random masking mode.
         self.mask_probs = torch.linspace(1.0 / num_timesteps, 1.0, num_timesteps)
 
     def add_masks(self, x_0, t):
         """
-        Add masks to tokens x_0 at timestep
+        Add masks to tokens x_0 at timestep t.
+
         Args:
             x_0: Clean tokens, shape (B, T)
-            t: Timestep indices, shape (B,)
+            t:   Timestep indices, shape (B,)
+
         Returns:
-            x_t: Masked tokens at timestep t
+            x_t: Masked tokens at timestep t, shape (B, T)
+            mask: Boolean tensor, True at positions that are masked, shape (B, T)
         """
         B, T = x_0.shape
         device = x_0.device
-        # Get masking probability for each sample (index on CPU, then move to device)
-        mask_prob = self.mask_probs[t.cpu()].to(device)  # (B,)
-        # Create mask: which tokens to replace with [MASK]
-        mask = torch.rand(B, T, device=device) < mask_prob.unsqueeze(1)  # (B, T)
-        if mask.sum() == 0:
-            # random pick a token to mask
-            mask[:, torch.randint(0, T, (B,), device=device)] = True
-        # # Never mask the first context_len tokens
-        # if self.context_len > 0:
-        #     mask[:, : self.context_len] = False
-        # Replace masked positions with mask token
+
+        # -----------------------------
+        # Mode 1: original random masking
+        # -----------------------------
+        if not self.arlike_mask:
+            # Get masking probability for each sample according to its timestep.
+            mask_prob = self.mask_probs[t.cpu()].to(device)  # (B,)
+
+            # Sample random mask positions independently for each token.
+            mask = torch.rand(B, T, device=device) < mask_prob.unsqueeze(1)  # (B, T)
+
+            # Ensure at least one masked position per sample to avoid NaNs in the loss.
+            no_mask_rows = (mask.sum(dim=1) == 0)  # (B,)
+            if no_mask_rows.any():
+                rand_idx = torch.randint(0, T, (no_mask_rows.sum(),), device=device)
+                mask[no_mask_rows, :] = False
+                mask[no_mask_rows, rand_idx] = True
+
+            # If you want to never mask the first context_len tokens, uncomment:
+            # if self.context_len > 0:
+            #     mask[:, : self.context_len] = False
+
+            x_t = torch.where(mask, self.mask_token_id, x_0)
+            return x_t, mask
+
+        # -----------------------------
+        # Mode 2: AR-like left-to-right masking
+        # -----------------------------
+        # Here t controls how long the unknown "future" suffix is.
+        # Larger t -> longer masked suffix -> less visible context.
+        t_float = t.float()
+        if self.num_timesteps > 1:
+            frac_future = t_float / (self.num_timesteps - 1)  # in [0, 1]
+        else:
+            frac_future = torch.zeros_like(t_float, device=device)
+
+        # future_len[b] is how many tokens on the right are considered "future" for sample b.
+        future_len = (frac_future * T).long().clamp(0, T)  # (B,)
+
+        mask = torch.zeros(B, T, dtype=torch.bool, device=device)
+
+        for b in range(B):
+            f = int(future_len[b].item())  # length of masked suffix on the right
+            visible_len = T - f            # number of visible tokens on the left
+
+            # Always keep at least context_len tokens visible at the start if desired.
+            visible_len = max(visible_len, self.context_len)
+
+            if visible_len < T:
+                # Mask the right-side suffix [visible_len, T).
+                mask[b, visible_len:] = True
+
+        # Again ensure at least one mask per sample.
+        no_mask_rows = (mask.sum(dim=1) == 0)
+        if no_mask_rows.any():
+            rand_idx = torch.randint(0, T, (no_mask_rows.sum(),), device=device)
+            mask[no_mask_rows, :] = False
+            mask[no_mask_rows, rand_idx] = True
+
         x_t = torch.where(mask, self.mask_token_id, x_0)
         return x_t, mask
 
@@ -322,7 +386,7 @@ if model_type == 'diffusion':
         sequence_len=model_args['sequence_len'],
         vocab_size=model_args['vocab_size'],
         mask_token_id=model_args['mask_token_id'],
-        causal=False,
+        causal=causal, ###Change back
         nonmask_only=model_args['nonmask_only'],
         time_conditioned=model_args['time_conditioned'],
         diffusion_steps=model_args.get('diffusion_steps', diffusion_steps),
@@ -332,7 +396,8 @@ if model_type == 'diffusion':
         n_kv_head=model_args['n_head'],
         n_embd=model_args['n_embd'],
         dropout=dropout,
-        bias=model_args['bias']
+        bias=model_args['bias'],
+        diff_casual=diff_casual
     )
     model = Transformer(diffusion_config)
 else:
@@ -347,7 +412,8 @@ else:
         n_kv_head=model_args['n_head'],
         n_embd=model_args['n_embd'],
         dropout=dropout,
-        bias=model_args['bias']
+        bias=model_args['bias'],
+        diff_casual=diff_casual
     )
     model = Transformer(gptconf)
 
@@ -447,7 +513,8 @@ if model_type == 'diffusion':
     mask_schedule = MaskedDiffusionSchedule(
         num_timesteps=model.config.diffusion_steps,
         mask_token_id=model.config.mask_token_id,
-        # context_len=model.config.context_len
+        context_len=model.config.context_len,
+        arlike_mask=arlike_mask,
     )
     print("Diffusion setup complete!")
 
@@ -483,6 +550,8 @@ while True:
                 context = decode(context_tokens[i].tolist())
                 print(context)
             if model_type == 'diffusion':
+                # Choose decoding method based on ar_sampling flag
+                decode_method = "ar" if ar_sampling else "confidence"
                 samples = raw_model.sample(
                     batch_size=sample_batch_size,
                     seq_len=raw_model.config.sequence_len,
@@ -490,7 +559,7 @@ while True:
                     temperature=1.0,
                     device=raw_model.get_device(),
                     context_tokens=context_tokens,
-                    method="confidence",
+                    method=decode_method,
                     confidence_threshold=confidence_threshold,
                 )
             elif model_type == 'gpt2':
