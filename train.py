@@ -67,6 +67,7 @@ sample_interval = 250 # how often to generate samples during diffusion training
 sample_iter_list = [2**i-1 for i in range(9)] # non-linear sample interval at the beginning
 confidence_threshold = 0.95 # for diffusion sampling
 time_conditioned = True if model_type == 'diffusion' else False
+predict_timestep = False
 nonmask_only = False # diffusion attention mask
 mask_token_id = 50257
 # model
@@ -298,6 +299,7 @@ elif init_from == 'scratch':
         # model_args['vocab_size'] = 128
         model_args['diffusion_steps'] = diffusion_steps
         model_args['time_conditioned'] = time_conditioned
+        model_args['predict_timestep'] = predict_timestep
         model_args['nonmask_only'] = nonmask_only
         model_args['mask_token_id'] = mask_token_id
 elif init_from == 'resume':
@@ -325,6 +327,7 @@ if model_type == 'diffusion':
         causal=False,
         nonmask_only=model_args['nonmask_only'],
         time_conditioned=model_args['time_conditioned'],
+        predict_timestep=model_args['predict_timestep'],
         diffusion_steps=model_args.get('diffusion_steps', diffusion_steps),
         context_len=model_args.get('context_len', context_len),
         n_layer=model_args['n_layer'],
@@ -341,6 +344,7 @@ else:
         vocab_size=model_args['vocab_size'],
         causal=True,
         time_conditioned=False,
+        predict_timestep=False,
         nonmask_only=False,
         n_layer=model_args['n_layer'],
         n_head=model_args['n_head'],
@@ -411,13 +415,53 @@ def estimate_loss():
                     t = torch.randint(0, mask_schedule.num_timesteps, (batch_size,), device=device)
                     X_t, mask = mask_schedule.add_masks(X, t)
                     # mask = X_t == mask_schedule.mask_token_id # (batch_size, seq_len)
-                    logits = model(X_t, t=t)
+                    if predict_timestep:
+                        logits, timestep_logits = model(X_t, t=t)
+                    else:
+                        logits = model(X_t, t=t)
                     loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1), reduction='none')
                     loss = (loss.view(batch_size, -1) * mask).sum() / mask.sum()
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
     return out
+
+
+@torch.no_grad()
+def evaluate_timestep_prediction():
+    """Evaluate timestep prediction accuracy on train and val sets"""
+    model.eval()
+    out = {}
+    
+    for split in ['train', 'val']:
+        accuracies = torch.zeros(eval_iters)
+        mae_errors = torch.zeros(eval_iters)  # Mean Absolute Error
+        
+        for k in range(eval_iters):
+            X, Y = get_batch(split)
+            with ctx:
+                # Sample random timesteps
+                t = torch.randint(0, mask_schedule.num_timesteps, (batch_size,), device=device)
+                X_t, mask = mask_schedule.add_masks(X, t)
+                
+                # Get predictions
+                logits, timestep_logits = model(X_t, t=t)
+                
+                # Timestep prediction accuracy
+                timestep_pred = timestep_logits.argmax(dim=-1)
+                accuracy = (timestep_pred == t).float().mean()
+                accuracies[k] = accuracy.item()
+                
+                # Mean absolute error in timestep prediction
+                mae = (timestep_pred - t).abs().float().mean()
+                mae_errors[k] = mae.item()
+        
+        out[f'{split}_timestep_acc'] = accuracies.mean()
+        out[f'{split}_timestep_mae'] = mae_errors.mean()
+    
+    model.train()
+    return out
+
 
 # learning rate decay scheduler (cosine with warmup)
 def get_lr(it):
@@ -518,14 +562,24 @@ while True:
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-        if wandb_log:
-            wandb.log({
-                "iter": iter_num,
-                "train/loss": losses['train'],
-                "val/loss": losses['val'],
-                "lr": lr,
-                # "mfu": running_mfu*100, # convert to percentage
+        log_dict = {
+            "iter": iter_num,
+            "train/loss": losses['train'],
+            "val/loss": losses['val'],
+            "lr": lr,
+        }
+        if predict_timestep:
+            timestep_metrics = evaluate_timestep_prediction()
+            log_dict.update({
+                "train/timestep_acc": timestep_metrics['train_timestep_acc'],
+                "train/timestep_mae": timestep_metrics['train_timestep_mae'],
+                "val/timestep_acc": timestep_metrics['val_timestep_acc'],
+                "val/timestep_mae": timestep_metrics['val_timestep_mae'],
             })
+            print(f"  train timestep acc: {timestep_metrics['train_timestep_acc']:.4f}, mae: {timestep_metrics['train_timestep_mae']:.2f}")
+            print(f"  val timestep acc: {timestep_metrics['val_timestep_acc']:.4f}, mae: {timestep_metrics['val_timestep_mae']:.2f}")
+        if wandb_log:
+            wandb.log(log_dict)
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
             if iter_num > 0:
@@ -560,9 +614,22 @@ while True:
                 t = torch.randint(0, mask_schedule.num_timesteps, (batch_size,), device=device)
                 X_t, mask = mask_schedule.add_masks(X, t)
                 # mask = X_t == mask_schedule.mask_token_id # (batch_size, seq_len)
-                logits = model(X_t, t=t)
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1), reduction='none')
-                loss = (loss.view(batch_size, -1) * mask).sum() / mask.sum()
+                if predict_timestep:
+                    logits, timestep_logits = model(X_t, t=t)
+                    # Token prediction loss (only on masked positions)
+                    token_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1), reduction='none')
+                    token_loss = (token_loss.view(batch_size, -1) * mask).sum() / mask.sum()
+                    
+                    # Timestep prediction loss
+                    timestep_loss = F.cross_entropy(timestep_logits, t)
+                    
+                    # Combined loss
+                    timestep_loss_weight = 0.1
+                    loss = token_loss + timestep_loss_weight * timestep_loss
+                else:
+                    logits = model(X_t, t=t)
+                    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1), reduction='none')
+                    loss = (loss.view(batch_size, -1) * mask).sum() / mask.sum()
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         # backward pass, with gradient scaling if training in fp16

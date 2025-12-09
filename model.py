@@ -21,6 +21,7 @@ class GPTConfig:
     vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
     causal: bool = True
     time_conditioned: bool = False
+    predict_timestep: bool = False 
     nonmask_only: bool = False # custom attention mask
     n_layer: int = 6
     n_head: int = 6 # number of query heads (GQA)
@@ -37,6 +38,7 @@ class DiffusionConfig(GPTConfig):
     nonmask_only: bool = False # custom attention mask
     causal: bool = False  # non-causal attention for diffusion
     time_conditioned: bool = True  # time-conditioning for diffusion
+    predict_timestep: bool = False 
     diffusion_steps: int = 128
     context_len: int = 16  # Number of prefix tokens that are never masked
 
@@ -226,6 +228,12 @@ class Transformer(nn.Module):
         # # This behavior is deprecated and will be an error in future versions"
         # # not 100% sure what this is, so far seems to be harmless. TODO investigate
         # self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
+        if config.predict_timestep:
+            self.timestep_head = nn.Sequential(
+                nn.Linear(config.n_embd, config.n_embd),
+                nn.ReLU(),
+                nn.Linear(config.n_embd, config.diffusion_steps)
+            )
         
         # Rotary embeddings
         self.rotary_seq_len = config.sequence_len * 2
@@ -350,6 +358,19 @@ class Transformer(nn.Module):
         logits = self.lm_head(x)
         logits = softcap * torch.tanh(logits / softcap)  # soft cap to stabilize training
         logits = logits.float() # use tf32/fp32 for logits
+        
+        if self.config.predict_timestep:
+            pooled = x.mean(dim=1)  # (B, n_embd)
+            
+            # Option 2: Use first token (CLS-style)
+            # pooled = x[:, 0]  # (B, n_embd)
+            
+            # Option 3: Max pooling
+            # pooled = x.max(dim=1)[0]  # (B, n_embd)
+            
+            timestep_logits = self.timestep_head(pooled)  # (B, diffusion_steps)
+            return logits, timestep_logits
+        
         return logits
 
     def crop_block_size(self, block_size):
