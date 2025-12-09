@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=dl-project-liyan
+#SBATCH --job-name=dl-project-liyan-diffusion
 #SBATCH --output=results/output_%A_%a.txt
 #SBATCH --error=results/error_%A_%a.txt
 #SBATCH -c 10
@@ -29,14 +29,14 @@ export TINKER_API_KEY=tml-qsuOJx8ByMWeObWa9bTEGE5ivgL0IPW9OCZd4kE2ShbYTzylSqvm6s
 
 
 # Run training for all permutation configurations
-for config in config/train_ar_random_order_{1,2,4,8,16}.py; do
+for config in config/train_diffusion_random_order_{1,2,4,8,16}.py; do
     echo "Running training with config: $config"
     python train.py "$config"
 done
 
 # Run benchmarking and perplexity curves for each output directory
 for num_perm in 1 2 4 8 16; do
-    INPUT_DIR="out-shakespeare-random-order-${num_perm}perm-10ksteps"
+    INPUT_DIR="out-diffusion-random-order-${num_perm}perm-10ksteps"
 
     echo "Processing results for $INPUT_DIR"
 

@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 # -----------------------------------------------------------------------------
 # default config values
 out_dir = "out"
+max_ppl = 3000
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -40,7 +41,7 @@ for path in DIR.glob("*.json"):
     ppl = sum(ppls) / len(ppls)
 
     steps.append(step)
-    scores.append(ppl)
+    scores.append(min(ppl, max_ppl))
 
 # sort by step
 steps, scores = zip(*sorted(zip(steps, scores)))
@@ -49,8 +50,9 @@ steps, scores = zip(*sorted(zip(steps, scores)))
 plt.figure()
 plt.plot(steps, scores, marker="o")
 plt.xlabel("Step")
-plt.ylabel("Score")
-plt.title("Score vs Step")
+plt.ylabel("Perplexity")
+plt.yscale('log')
+plt.title("Perplexity vs Step")
 plt.grid(True)
 plt.tight_layout()
 plt.savefig(f"{DIR}/ppl_curve.png")

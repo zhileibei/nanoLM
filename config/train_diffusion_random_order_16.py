@@ -4,7 +4,11 @@
 # Model type
 model_type = 'diffusion'  # 'gpt2' or 'diffusion'
 
-out_dir = 'out-diffusion-10ksteps'
+# Data loading
+data_permuted = True  # Use random order data loader (get_batch_random_order)
+num_permutations = 16
+
+out_dir = 'out-diffusion-random-order-16perm-10ksteps'
 eval_interval = 100  # keep frequent because we'll overfit
 eval_iters = 200
 sample_interval = 250  # generate samples frequently to see progress
@@ -16,7 +20,7 @@ always_save_checkpoint = False
 
 wandb_log = True  # override via command line if you like
 wandb_project = 'shakespeare'
-wandb_run_name = 'mini-diffusion'
+wandb_run_name = 'mini-diffusion-random-order-16perm'
 
 dataset = 'shakespeare'
 gradient_accumulation_steps = 1
