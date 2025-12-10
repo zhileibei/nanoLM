@@ -292,6 +292,10 @@ def load_get_batch_random_order():
             x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
         else:
             x, y = x.to(device), y.to(device)
+        if model_type == 'gpt2':
+            return x, y
+        elif model_type == 'diffusion':
+            return x, x
         return x, y
     
     return get_batch_random_order
