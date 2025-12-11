@@ -74,6 +74,7 @@ arlike_mask = False   # if True, use AR-like left-to-right masking schedule duri
 ar_sampling = False   # if True, use AR left-to-right decoding during sampling
 diff_casual = False  # if True, use causal + nonmask_only combined mask for diffusion
 causal = False        # default causal flag for diffusion attention (can be overridden)
+analyze_attention = False
 # model
 n_layer = 12
 n_head = 12
@@ -404,7 +405,8 @@ if model_type == 'diffusion':
         n_embd=model_args['n_embd'],
         dropout=dropout,
         bias=model_args['bias'],
-        diff_casual=diff_casual
+        diff_casual=diff_casual,
+        analyze_attention=analyze_attention
     )
     model = Transformer(diffusion_config)
 else:
@@ -485,8 +487,8 @@ def estimate_loss():
                     t = torch.randint(0, mask_schedule.num_timesteps, (batch_size,), device=device)
                     X_t, mask = mask_schedule.add_masks(X, t)
                     # mask = X_t == mask_schedule.mask_token_id # (batch_size, seq_len)
-                    if predict_timestep:
-                        logits, timestep_logits = model(X_t, t=t)
+                    if predict_timestep or analyze_attention:
+                        logits, _ = model(X_t, t=t)
                     else:
                         logits = model(X_t, t=t)
                     loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1), reduction='none')
@@ -496,7 +498,7 @@ def estimate_loss():
     model.train()
     return out
 
-
+from scipy.stats import pearsonr, spearmanr
 @torch.no_grad()
 def evaluate_timestep_prediction():
     """Evaluate timestep prediction accuracy on train and val sets"""
@@ -506,7 +508,8 @@ def evaluate_timestep_prediction():
     for split in ['train', 'val']:
         accuracies = torch.zeros(eval_iters)
         mae_errors = torch.zeros(eval_iters)  # Mean Absolute Error
-        
+        predicted_t = []
+        gt_t = []
         for k in range(eval_iters):
             X, Y = get_batch(split)
             with ctx:
@@ -525,13 +528,185 @@ def evaluate_timestep_prediction():
                 # Mean absolute error in timestep prediction
                 mae = (timestep_pred - t).abs().float().mean()
                 mae_errors[k] = mae.item()
+
+                predicted_t.append(timestep_pred.cpu())
+                gt_t.append(t.cpu())
         
+        # Concatenate all predictions and ground truth
+        predicted_t = torch.cat(predicted_t).numpy()  # Shape: (eval_iters * batch_size,)
+        gt_t = torch.cat(gt_t).numpy()  # Shape: (eval_iters * batch_size,)
+
+        # Calculate correlations
+        pearson_corr, pearson_pval = pearsonr(predicted_t, gt_t)
+        spearman_corr, spearman_pval = spearmanr(predicted_t, gt_t)
+
         out[f'{split}_timestep_acc'] = accuracies.mean()
         out[f'{split}_timestep_mae'] = mae_errors.mean()
+        out[f'{split}_timestep_pearson'] = pearson_corr
+        out[f'{split}_timestep_spearman'] = spearman_corr
     
     model.train()
     return out
 
+import matplotlib.pyplot as plt
+
+@torch.no_grad()
+def analyze_attention_to_masks():
+    """
+    Analyze whether the model attends to masked tokens across train/val splits.
+    Returns statistics and visualizations compatible with wandb logging.
+    """
+    out = {}
+    model.eval()
+    # breakpoint()
+    for split in ['train', 'val']:
+        # Statistics to track
+        attn_to_masked = []
+        attn_from_masked = []
+        # attn_masked_to_masked = []
+        # attn_unmasked_to_unmasked = []
+        mask_ratios = []
+        
+        # Store one example for visualization
+        example_attn = None
+        example_mask = None
+        
+        for k in range(eval_iters):
+            X, Y = get_batch(split)
+            
+            with ctx:
+                # Sample random timesteps
+                t = torch.randint(0, mask_schedule.num_timesteps, (batch_size,), device=device)
+                X_t, mask = mask_schedule.add_masks(X, t)
+                
+                # Forward pass with attention weights
+                logits, attn_weights = model(X_t, t=t)
+                
+                # Average across heads (and layers if present)
+                if len(attn_weights.shape) == 5:  # Multiple layers
+                    avg_attn = attn_weights.mean(dim=(0, 2))  # (batch, seq_len, seq_len)
+                else:
+                    avg_attn = attn_weights.mean(dim=0)  # (batch, seq_len, seq_len)
+                
+                # Store first example for visualization
+                if example_attn is None and k == 0:
+                    example_attn = avg_attn[0].cpu().numpy()  # First sample
+                    example_mask = mask[0].cpu().numpy()
+                
+                # Calculate statistics
+                for b in range(batch_size):
+                    mask_b = mask[b]
+                    attn_b = avg_attn[b]
+                    
+                    num_masked = mask_b.sum().item()
+                    num_unmasked = (~mask_b).sum().item()
+                    
+                    if num_masked > 0 and num_unmasked > 0:
+                        attn_to_masked.append(attn_b[:, mask_b].mean().item())
+                        attn_from_masked.append(attn_b[mask_b, :].mean().item())
+                        # attn_masked_to_masked.append(attn_b[mask_b][:, mask_b].mean().item())
+                        
+                        # unmasked = ~mask_b
+                        # attn_unmasked_to_unmasked.append(attn_b[unmasked][:, unmasked].mean().item())
+                        mask_ratios.append(num_masked / (num_masked + num_unmasked))
+        
+        # Create sorted heatmap visualization
+        sorted_heatmap = create_sorted_attention_heatmap(example_attn, example_mask, split)
+        
+        # Aggregate statistics for this split
+        out[split] = {
+            'attn_to_masked_mean': np.mean(attn_to_masked) if attn_to_masked else 0.0,
+            'attn_to_masked_std': np.std(attn_to_masked) if attn_to_masked else 0.0,
+            'attn_from_masked_mean': np.mean(attn_from_masked) if attn_from_masked else 0.0,
+            'attn_from_masked_std': np.std(attn_from_masked) if attn_from_masked else 0.0,
+            # 'attn_masked_to_masked_mean': np.mean(attn_masked_to_masked) if attn_masked_to_masked else 0.0,
+            # 'attn_unmasked_to_unmasked_mean': np.mean(attn_unmasked_to_unmasked) if attn_unmasked_to_unmasked else 0.0,
+            'avg_mask_ratio': np.mean(mask_ratios) if mask_ratios else 0.0,
+            'num_samples': len(attn_to_masked),
+            'attention_heatmap': sorted_heatmap  # wandb.Image object
+        }
+    
+    model.train()
+    return out
+
+
+def create_sorted_attention_heatmap(attn_matrix, mask, split_name):
+    """
+    Create a sorted attention heatmap where masked and unmasked tokens are grouped.
+    
+    Args:
+        attn_matrix: (seq_len, seq_len) attention weights
+        mask: (seq_len,) boolean array where True = masked
+        split_name: 'train' or 'val'
+    
+    Returns:
+        wandb.Image object for logging
+    """
+    seq_len = len(mask)
+    
+    # Get indices of masked and unmasked tokens
+    masked_indices = np.where(mask)[0]
+    unmasked_indices = np.where(~mask)[0]
+    
+    # Create sorted index: unmasked first, then masked
+    sorted_indices = np.concatenate([unmasked_indices, masked_indices])
+    
+    # Reorder attention matrix
+    sorted_attn = attn_matrix[sorted_indices][:, sorted_indices]
+    
+    # Create figure with better size
+    fig, ax = plt.subplots(figsize=(10, 9))
+    
+    # Plot heatmap
+    im = ax.imshow(sorted_attn, cmap='viridis', aspect='auto', interpolation='nearest')
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Attention Weight', rotation=270, labelpad=20)
+    
+    # Add boundary line between masked and unmasked
+    num_unmasked = len(unmasked_indices)
+    if num_unmasked > 0 and num_unmasked < seq_len:
+        ax.axhline(y=num_unmasked - 0.5, color='red', linestyle='--', linewidth=2, label='Mask boundary')
+        ax.axvline(x=num_unmasked - 0.5, color='red', linestyle='--', linewidth=2)
+    
+    # Add labels and title
+    ax.set_xlabel('Key Position (Unmasked | Masked)', fontsize=11)
+    ax.set_ylabel('Query Position (Unmasked | Masked)', fontsize=11)
+    ax.set_title(f'Attention Heatmap - {split_name.capitalize()} Split\n'
+                 f'Unmasked: {num_unmasked}, Masked: {len(masked_indices)}', 
+                 fontsize=12, pad=10)
+    
+    # Add text annotations for quadrants
+    if num_unmasked > 0 and len(masked_indices) > 0:
+        # Unmasked → Unmasked (top-left)
+        ax.text(num_unmasked/2, num_unmasked/2, 'U→U', 
+                ha='center', va='center', color='white', fontsize=10, 
+                bbox=dict(boxstyle='round', facecolor='black', alpha=0.5))
+        
+        # Unmasked → Masked (top-right)
+        ax.text(num_unmasked + len(masked_indices)/2, num_unmasked/2, 'U→M',
+                ha='center', va='center', color='white', fontsize=10,
+                bbox=dict(boxstyle='round', facecolor='black', alpha=0.5))
+        
+        # Masked → Unmasked (bottom-left)
+        ax.text(num_unmasked/2, num_unmasked + len(masked_indices)/2, 'M→U',
+                ha='center', va='center', color='white', fontsize=10,
+                bbox=dict(boxstyle='round', facecolor='black', alpha=0.5))
+        
+        # Masked → Masked (bottom-right)
+        ax.text(num_unmasked + len(masked_indices)/2, 
+                num_unmasked + len(masked_indices)/2, 'M→M',
+                ha='center', va='center', color='white', fontsize=10,
+                bbox=dict(boxstyle='round', facecolor='black', alpha=0.5))
+    
+    plt.tight_layout()
+    
+    # Convert to wandb Image
+    wandb_image = wandb.Image(fig)
+    plt.close(fig)
+    
+    return wandb_image
 
 # learning rate decay scheduler (cosine with warmup)
 def get_lr(it):
@@ -548,8 +723,8 @@ def get_lr(it):
     return min_lr + coeff * (learning_rate - min_lr)
 
 # logging
+import wandb
 if wandb_log and master_process:
-    import wandb
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
 
 # -----------------------------------------------------------------------------
@@ -646,11 +821,33 @@ while True:
             log_dict.update({
                 "train/timestep_acc": timestep_metrics['train_timestep_acc'],
                 "train/timestep_mae": timestep_metrics['train_timestep_mae'],
+                "train/timestep_pearson": timestep_metrics['train_timestep_pearson'],
+                "train/timestep_spearman": timestep_metrics['train_timestep_spearman'],
                 "val/timestep_acc": timestep_metrics['val_timestep_acc'],
                 "val/timestep_mae": timestep_metrics['val_timestep_mae'],
+                "val/timestep_pearson": timestep_metrics['val_timestep_pearson'],
+                "val/timestep_spearman": timestep_metrics['val_timestep_spearman'],
             })
             print(f"  train timestep acc: {timestep_metrics['train_timestep_acc']:.4f}, mae: {timestep_metrics['train_timestep_mae']:.2f}")
             print(f"  val timestep acc: {timestep_metrics['val_timestep_acc']:.4f}, mae: {timestep_metrics['val_timestep_mae']:.2f}")
+        if analyze_attention:
+            attn_stats = analyze_attention_to_masks()
+            
+            # Add attention metrics to log dict
+            for split in ['train', 'val']:
+                stats = attn_stats[split]
+                prefix = f'{split}/attention'
+                
+                log_dict.update({
+                    f'{prefix}/to_masked_mean': stats['attn_to_masked_mean'],
+                    f'{prefix}/to_masked_std': stats['attn_to_masked_std'],
+                    f'{prefix}/from_masked_mean': stats['attn_from_masked_mean'],
+                    f'{prefix}/from_masked_std': stats['attn_from_masked_std'],
+                    # f'{prefix}/masked_to_masked': stats['attn_masked_to_masked_mean'],
+                    # f'{prefix}/unmasked_to_unmasked': stats['attn_unmasked_to_unmasked_mean'],
+                    f'{prefix}/mask_ratio': stats['avg_mask_ratio'],
+                    f'{prefix}/heatmap': stats['attention_heatmap']
+                })
         if wandb_log:
             wandb.log(log_dict)
         if losses['val'] < best_val_loss or always_save_checkpoint:
@@ -697,8 +894,13 @@ while True:
                     timestep_loss = F.cross_entropy(timestep_logits, t)
                     
                     # Combined loss
-                    timestep_loss_weight = 0.1
+                    # timestep_loss_weight = 0.1
+                    timestep_loss_weight = 1
                     loss = token_loss + timestep_loss_weight * timestep_loss
+                elif analyze_attention:
+                    logits, block_attn_wts = model(X_t, t=t)
+                    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1), reduction='none')
+                    loss = (loss.view(batch_size, -1) * mask).sum() / mask.sum()
                 else:
                     logits = model(X_t, t=t)
                     loss = F.cross_entropy(logits.view(-1, logits.size(-1)), Y.view(-1), reduction='none')

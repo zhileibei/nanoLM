@@ -3,7 +3,9 @@ Benchmark perplexity of generated samples using an external LLM.
 Reads samples from sample.py output (JSON) and computes perplexity using a reference model.
 """
 import os
+import re
 import json
+from pathlib import Path
 import argparse
 import torch
 import numpy as np
@@ -118,8 +120,12 @@ def main():
 
     # Process each input file
     input_files = args.input_file if isinstance(args.input_file, list) else [args.input_file]
-
+    STEP_RE = re.compile(r"step(\d+)")
     for file_idx, input_file_path in enumerate(input_files):
+        filename = Path(input_file_path).name
+        step = int(STEP_RE.search(filename).group(1))
+        if step % 500 != 0:
+            continue
         print(f"\n{'='*60}")
         print(f"Processing file {file_idx+1}/{len(input_files)}: {input_file_path}")
         print(f"{'='*60}")

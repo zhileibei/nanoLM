@@ -22,3 +22,5 @@ module load miniforge
 conda activate nanolm
 
 python train.py config/train_diffusion.py
+# python train.py config/train_diffusion_predict_timestep.py
+# python train.py config/train_diffusion_causal.py

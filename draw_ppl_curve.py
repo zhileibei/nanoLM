@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 # DIR = Path("/home/beizl42/projects/nanoLM/out-shakespeare/perplexity")
 # DIR = Path("/home/beizl42/projects/nanoLM/out-shakespeare-diffusion/perplexity")
 DIR = Path("/home/beizl42/projects/nanoLM/out-shakespeare-diffusion-100ksteps/perplexity")
+DIR = Path("/home/beizl42/projects/nanoLM/out-shakespeare-100ksteps/perplexity")
 
 # regex to extract step number from filename
 STEP_RE = re.compile(r"step(\d+)")

@@ -4,7 +4,7 @@
 # Model type
 model_type = 'diffusion'  # 'gpt2' or 'diffusion'
 
-out_dir = 'out-diffusion-10ksteps-predict-timestep'
+out_dir = 'out-diffusion-attn'
 eval_interval = 100  # keep frequent because we'll overfit
 eval_iters = 200
 sample_interval = 250  # generate samples frequently to see progress
@@ -14,25 +14,22 @@ log_interval = 10  # don't print too too often
 # we expect to overfit on this small dataset, so only save when val improves
 always_save_checkpoint = False
 
-wandb_log = True  # override via command line if you like
+wandb_log = False  # override via command line if you like
 wandb_project = 'shakespeare'
-wandb_run_name = 'mini-diffusion-predict-timestep'
-
+wandb_run_name = 'mini-diffusion-attn'
+time_conditioned = True
 dataset = 'shakespeare'
 gradient_accumulation_steps = 1
 batch_size = 64
 block_size = 256  # context of up to 256 previous characters
 context_len = 16  # Number of prefix tokens that are never masked
-time_conditioned = False
-predict_timestep = True
-
-nonmask_only = False
+time_conditioned = True
 # baby Diffusion model :)
 n_layer = 6
 n_head = 6
 n_embd = 384
 dropout = 0.2
-
+analyze_attention = True
 # Diffusion-specific parameters
 diffusion_steps = 128
 confidence_threshold = 0.95  # For confidence-based sampling
@@ -49,3 +46,4 @@ warmup_iters = 200  # not super necessary potentially
 # device = 'cuda'  # Use GPU
 # dtype = 'bfloat16'  # Use bfloat16 for H100/H200
 # compile = True  # Enable torch.compile for
+arlike_mask = False  # use AR-like left-to-right masking during diffusion training

@@ -30,6 +30,7 @@ class GPTConfig:
     dropout: float = 0.0
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     context_len: int = 16  # Number of prefix tokens that are never masked
+    analyze_attention: bool = False
 
 @dataclass
 class DiffusionConfig(GPTConfig):
@@ -79,6 +80,7 @@ class SelfAttention(nn.Module):
         self.nonmask_only = getattr(config, 'nonmask_only', False)
         self.mask_token_id = getattr(config, 'mask_token_id', None)
         self.diff_casual = getattr(config, 'diff_casual', False)  # new
+        self.analyze_attention = getattr(config, 'analyze_attention', False) # for analyzing attention heatmap
         self.n_head = config.n_head
         self.n_kv_head = config.n_kv_head
         self.n_embd = config.n_embd
@@ -100,6 +102,35 @@ class SelfAttention(nn.Module):
         #     self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
         #                                 .view(1, 1, config.block_size, config.block_size))
 
+    def compute_attention_with_weights(self, q, k, v, attn_mask=None, enable_gqa=False):
+        """
+        Compute attention with explicit weight calculation for visualization
+        """
+        # Get dimensions
+        batch_size, num_heads, seq_len, head_dim = q.shape
+        
+        # Handle GQA if needed (expand k, v to match q's num_heads)
+        if enable_gqa and k.shape[1] != q.shape[1]:
+            num_groups = q.shape[1] // k.shape[1]
+            k = k.repeat_interleave(num_groups, dim=1)
+            v = v.repeat_interleave(num_groups, dim=1)
+        
+        # Compute attention scores
+        scores = torch.matmul(q, k.transpose(-2, -1)) / (head_dim ** 0.5)
+        
+        # Apply mask if provided
+        if attn_mask is not None:
+            scores = scores + attn_mask  # Assumes mask uses -inf for masked positions
+        
+        # Compute attention weights
+        attn_weights = F.softmax(scores, dim=-1)
+        
+        # Apply attention to values
+        output = torch.matmul(attn_weights, v)
+        
+        return output, attn_weights
+
+    
     def forward(self, x, cos_sin, kv_cache, input_ids=None):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
@@ -146,8 +177,15 @@ class SelfAttention(nn.Module):
             custom_mask = custom_mask.expand(B, self.n_head, Tq, Tk)  # (B, n_head, Tq, Tk)
         if not self.causal:
             # Non-causal attention (e.g. for diffusion models)
-            attn_mask = custom_mask if custom_mask is not None else None
-            y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=False, enable_gqa=enable_gqa)
+            if self.analyze_attention:
+                y, attn_weights = self.compute_attention_with_weights(
+                    q, k, v, 
+                    attn_mask=custom_mask, 
+                    enable_gqa=enable_gqa
+                )
+            else:
+                attn_mask = custom_mask if custom_mask is not None else None
+                y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=False, enable_gqa=enable_gqa)
         elif self.causal and self.diff_casual and custom_mask is not None and (kv_cache is None or Tq == Tk):
             # Causal + nonmask_only combined. We build a manual causal mask and
             # AND it with custom_mask, then pass it as attn_mask with is_causal=False.
@@ -191,7 +229,10 @@ class SelfAttention(nn.Module):
         # output projection
         # y = self.resid_dropout(self.c_proj(y))
         y = self.c_proj(y)
-        return y
+        if self.analyze_attention:
+            return y, attn_weights
+        else:
+            return y
 
 class MLP(nn.Module):
 
@@ -218,13 +259,21 @@ class Block(nn.Module):
         self.attn = SelfAttention(config, layer_idx)
         # self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
+        self.analyze_attention = getattr(config, 'analyze_attention', False) # for analyzing attention heatmap
 
     def forward(self, x, cos_sin, kv_cache, input_ids=None):
         # x = x + self.attn(self.ln_1(x))
-        x = x + self.attn(norm(x), cos_sin, kv_cache, input_ids=input_ids)
+        if self.analyze_attention:
+            attn_output, attn_weights = self.attn(norm(x), cos_sin, kv_cache, input_ids=input_ids)
+        else:
+            attn_output = self.attn(norm(x), cos_sin, kv_cache, input_ids=input_ids)
+        x = x + attn_output
         # x = x + self.mlp(self.ln_2(x))
         x = x + self.mlp(norm(x))
-        return x
+        if self.analyze_attention:
+            return x, attn_weights
+        else:
+            return x
 
 
 class Transformer(nn.Module):
@@ -369,8 +418,13 @@ class Transformer(nn.Module):
         # pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         # x = self.transformer.drop(tok_emb + pos_emb)
         x = norm(x)
+        block_attn_wts = []
         for block in self.blocks:
-            x = block(x, cos_sin, kv_cache, input_ids=idx)
+            if self.config.analyze_attention:
+                x, attn_weights = block(x, cos_sin, kv_cache, input_ids=idx)
+                block_attn_wts.append(attn_weights)
+            else:
+                x = block(x, cos_sin, kv_cache, input_ids=idx)
         # x = self.transformer.ln_f(x)
         x = norm(x)
 
@@ -390,6 +444,10 @@ class Transformer(nn.Module):
             
             timestep_logits = self.timestep_head(pooled)  # (B, diffusion_steps)
             return logits, timestep_logits
+        
+        if self.config.analyze_attention:
+            block_attn_weights = torch.stack(block_attn_wts, dim=0)
+            return logits, block_attn_weights
         
         return logits
 
@@ -604,7 +662,10 @@ class Transformer(nn.Module):
             t_batch = torch.clamp(t_batch, 0, self.config.diffusion_steps - 1)
 
             # Predict tokens
-            logits = self.forward(x, t_batch)
+            if self.config.predict_timestep or self.config.analyze_attention:
+                logits, _ = self.forward(x, t_batch)
+            else:
+                logits = self.forward(x, t_batch)
 
             # Get confidence scores (max probability for each position)
             probs = F.softmax(logits / temperature, dim=-1)
@@ -703,7 +764,10 @@ class Transformer(nn.Module):
             t_batch = torch.clamp(t_batch, 0, self.config.diffusion_steps - 1)
 
             # Predict tokens
-            logits = self.forward(x, t_batch)
+            if self.config.predict_timestep or self.config.analyze_attention:
+                logits, _ = self.forward(x, t_batch)
+            else:
+                logits = self.forward(x, t_batch)
 
             # Get confidence scores (max probability for each position)
             probs = F.softmax(logits / temperature, dim=-1)
@@ -814,7 +878,10 @@ class Transformer(nn.Module):
                 x[:, pos + 1 :] = mask_id
 
             # 3.2 Run the diffusion transformer to predict logits at timestep t.
-            logits = self.forward(x, t_batch)  # (B, T, vocab_size)
+            if self.config.predict_timestep or self.config.analyze_attention:
+                logits, _ = self.forward(x, t_batch)
+            else:
+                logits = self.forward(x, t_batch)
 
             # 3.3 Get probabilities and pick the next token at position `pos`.
             logits_pos = logits[:, pos, :]  # (B, V)

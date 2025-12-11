@@ -13,10 +13,17 @@ plt.figure()
 # DIR = Path("/home/beizl42/projects/nanoLM/out-shakespeare-diffusion/perplexity")
 # DIR = Path("/home/beizl42/projects/nanoLM/out-shakespeare-diffusion-100ksteps/perplexity")
 # DIR = Path("/home/beizl42/projects/nanoLM/diffusion-10ksteps-notime/perplexity")
-for model in ['out-shakespeare-10ksteps', 'diffusion-10ksteps-notime']:
+
+model_desc = {
+    'out-gpt-10ksteps': 'gpt',
+    'out-diffusion-10ksteps': 'diffusion',
+}
+
+for model in ['out-gpt-10ksteps', 'out-diffusion-10ksteps']:
+# for model in ['out-shakespeare-100ksteps', 'out-shakespeare-diffusion-100ksteps']:
     DIR = Path(f"/home/beizl42/projects/nanoLM/{model}/perplexity")
     print(DIR)
-    exp_name = "10ksteps-notime"
+    exp_name = "10ksteps"
 
     # regex to extract step number from filename
     STEP_RE = re.compile(r"step(\d+)")
@@ -42,10 +49,11 @@ for model in ['out-shakespeare-10ksteps', 'diffusion-10ksteps-notime']:
         scores.append(ppl)
     # sort by step
     steps, scores = zip(*sorted(zip(steps, scores)))
-    plt.plot(steps, scores, marker="o", label=model)
+    plt.plot(steps, scores, marker="o", label=model_desc[model])
     
-plt.xlabel("Step")
-plt.ylabel("Score")
+plt.xlabel("Training Step")
+plt.ylabel("Qwen Perplexity")
+# plt.xscale('log')
 plt.yscale('log')
 plt.title("LLM PPL Score vs Step")
 plt.grid(True)
